@@ -1,6 +1,8 @@
 """Modelos de dados para o Internet Archive Downloader"""
 
 from enum import Enum
+from datetime import datetime
+import uuid
 
 
 class DownloadStatus(Enum):
@@ -13,7 +15,7 @@ class DownloadStatus(Enum):
 
 
 class DownloadItem:
-    def __init__(self, item_id, filename, dest_folder, url=None, segments=1):
+    def __init__(self, item_id, filename, dest_folder, url=None, segments=1, unique_id=None):
         self.item_id = item_id
         self.filename = filename
         self.dest_folder = dest_folder
@@ -27,6 +29,11 @@ class DownloadItem:
         self.total_bytes = 0
         self.speed = 0
 
+        # Tracking information
+        self.unique_id = unique_id if unique_id else str(uuid.uuid4())
+        self.date_added = datetime.now()
+        self.date_completed = None
+
     def to_dict(self):
         """Serializa para salvar"""
         return {
@@ -38,22 +45,30 @@ class DownloadItem:
             'status': self.status.value,
             'progress': self.progress,
             'downloaded_bytes': str(self.downloaded_bytes),  # Salva como string para evitar overflow
-            'total_bytes': str(self.total_bytes)  # Salva como string para evitar overflow
+            'total_bytes': str(self.total_bytes),  # Salva como string para evitar overflow
+            'unique_id': self.unique_id,
+            'date_added': self.date_added.isoformat(),
+            'date_completed': self.date_completed.isoformat() if self.date_completed else None
         }
 
     @staticmethod
     def from_dict(data):
         """Desserializa ao carregar"""
+        # Pega unique_id do dict ou gera um novo (para dados antigos)
+        unique_id = data.get('unique_id', str(uuid.uuid4()))
+
         item = DownloadItem(
             data['item_id'],
             data['filename'],
             data['dest_folder'],
             data.get('url'),
-            data.get('segments', 1)
+            data.get('segments', 1),
+            unique_id
         )
 
         # Restaura status - SEMPRE coloca como pausado ao carregar
         # Para que o usuário precise clicar em "Retomar" manualmente
+        # EXCETO para downloads completos, cancelados ou com erro
         status_str = data.get('status', 'Pausado')
         if status_str in ['Baixando', 'Aguardando']:
             item.status = DownloadStatus.PAUSED
@@ -87,5 +102,25 @@ class DownloadItem:
         except:
             item.downloaded_bytes = 0
             item.total_bytes = 0
+
+        # Restaura datas (com backwards compatibility)
+        try:
+            date_added_str = data.get('date_added')
+            if date_added_str:
+                item.date_added = datetime.fromisoformat(date_added_str)
+            else:
+                # Para dados antigos sem data, usa data atual
+                item.date_added = datetime.now()
+        except:
+            item.date_added = datetime.now()
+
+        try:
+            date_completed_str = data.get('date_completed')
+            if date_completed_str:
+                item.date_completed = datetime.fromisoformat(date_completed_str)
+            else:
+                item.date_completed = None
+        except:
+            item.date_completed = None
 
         return item
