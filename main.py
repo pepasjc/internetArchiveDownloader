@@ -14,9 +14,9 @@ from PyQt6.QtWidgets import (
     QLabel, QFileDialog, QProgressBar, QMessageBox,
     QTabWidget, QListWidgetItem, QSpinBox, QTableWidget,
     QTableWidgetItem, QHeaderView, QAbstractItemView,
-    QCompleter, QMenu, QCheckBox, QDialog, QComboBox
+    QCompleter, QMenu, QCheckBox, QDialog, QComboBox, QInputDialog
 )
-from PyQt6.QtCore import Qt, QSettings
+from PyQt6.QtCore import Qt, QSettings, QTimer
 from PyQt6.QtGui import QColor
 
 # Importa os módulos locais
@@ -24,6 +24,7 @@ from models import DownloadStatus, DownloadItem
 from threads import DownloadManager
 from utils import log, set_logging_enabled, format_size
 from translations import Translator
+from themes import get_current_theme
 
 class InternetArchiveGUI(QMainWindow):
     def __init__(self):
@@ -60,6 +61,7 @@ class InternetArchiveGUI(QMainWindow):
         self.results_per_page = 50
         self.current_sort_column = None
         self.current_sort_order = Qt.SortOrder.AscendingOrder
+        self.current_search_query = ""  # Termos da busca atual
 
         self.initUI()
         self.start_download_manager()
@@ -72,10 +74,10 @@ class InternetArchiveGUI(QMainWindow):
         # Conecta o sinal APÓS restaurar a aba (para não sobrescrever durante a inicialização)
         self.tabs_widget.currentChanged.connect(self.on_tab_changed)
 
-        # Auto-busca o último identifier se houver
+        # Auto-busca o último identifier se houver (adiado para após a janela aparecer)
         if self.last_identifier:
-            log(f"[STARTUP] Auto-buscando último identifier: {self.last_identifier}")
-            self.search_files()
+            log(f"[STARTUP] Auto-buscando último identifier (adiado): {self.last_identifier}")
+            QTimer.singleShot(0, self.search_files)
         
     def load_recent_identifiers(self):
         recent = self.settings.value('recent_identifiers', [])
@@ -139,19 +141,7 @@ class InternetArchiveGUI(QMainWindow):
                 
                 log(f"\n[LOAD] Arquivo: {download_item.filename}")
                 log(f"[LOAD] Total bytes do dict: {download_item.total_bytes}")
-                
-                # SEMPRE busca o tamanho do IA para garantir que está correto
-                if download_item.item_id:
-                    log(f"[LOAD] Buscando tamanho correto do IA para: {download_item.item_id}")
-                    try:
-                        item = ia.get_item(download_item.item_id)
-                        for f in item.files:
-                            if f['name'] == download_item.filename:
-                                download_item.total_bytes = abs(int(f.get('size', 0)))
-                                log(f"[LOAD] Total bytes correto do IA: {download_item.total_bytes} ({format_size(download_item.total_bytes)})")
-                                break
-                    except Exception as e:
-                        log(f"[LOAD] Erro ao buscar do IA: {e}")
+                # Usa o tamanho salvo em cache (evita chamada de rede bloqueante na inicialização)
                 
                 # Atualiza downloaded_bytes com o tamanho atual do arquivo
                 dest_path = os.path.join(download_item.dest_folder, download_item.filename)
@@ -224,7 +214,10 @@ class InternetArchiveGUI(QMainWindow):
         
     def initUI(self):
         self.setWindowTitle(self.t('window_title'))
-        self.setGeometry(100, 100, 900, 700)
+        self.setGeometry(100, 100, 1100, 750)
+
+        # Aplica stylesheet moderno
+        self.setStyleSheet(get_current_theme())
 
         # Adiciona barra de status
         self.statusBar().showMessage(self.t('status_ready'))
@@ -232,9 +225,10 @@ class InternetArchiveGUI(QMainWindow):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         layout = QVBoxLayout(central_widget)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
 
         self.tabs_widget = QTabWidget()
-        self.tabs_widget.setStyleSheet('QTabWidget::pane { border: 1px solid #ccc; } QTabBar::tab { font-size: 13px; padding: 8px 15px; }')
         layout.addWidget(self.tabs_widget)
 
         tab1 = self.create_search_tab()
@@ -243,14 +237,11 @@ class InternetArchiveGUI(QMainWindow):
         tab2 = self.create_identifier_tab()
         self.tabs_widget.addTab(tab2, self.t('tab_identifier'))
 
-        tab3 = self.create_url_tab()
-        self.tabs_widget.addTab(tab3, self.t('tab_url'))
+        tab3 = self.create_download_manager_tab()
+        self.tabs_widget.addTab(tab3, self.t('tab_downloads'))
 
-        tab4 = self.create_download_manager_tab()
-        self.tabs_widget.addTab(tab4, self.t('tab_downloads'))
-
-        tab5 = self.create_settings_tab()
-        self.tabs_widget.addTab(tab5, self.t('tab_settings'))
+        tab4 = self.create_settings_tab()
+        self.tabs_widget.addTab(tab4, self.t('tab_settings'))
 
     def on_tab_changed(self, index):
         """Salva a aba selecionada quando o usuário muda de aba"""
@@ -261,20 +252,21 @@ class InternetArchiveGUI(QMainWindow):
         """Cria a aba de busca no Internet Archive"""
         tab = QWidget()
         layout = QVBoxLayout(tab)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(16)
 
         # Título
         title = QLabel(self.t('search_title'))
-        title.setStyleSheet('font-size: 18px; font-weight: bold; padding: 5px;')
+        title.setProperty('class', 'section-header')
         layout.addWidget(title)
 
         # Campo de busca
         search_layout = QHBoxLayout()
+        search_layout.setSpacing(12)
         search_label = QLabel(self.t('search_label'))
-        search_label.setStyleSheet('font-size: 13px; font-weight: bold;')
         self.search_query_input = QLineEdit()
         self.search_query_input.setPlaceholderText(self.t('search_placeholder'))
-        self.search_query_input.setStyleSheet('font-size: 13px; padding: 5px;')
-        self.search_query_input.returnPressed.connect(self.search_archive)  # Enter para buscar
+        self.search_query_input.returnPressed.connect(self.search_archive)
 
         # Autocomplete para histórico de buscas
         self.search_completer = QCompleter(self.recent_searches)
@@ -283,9 +275,7 @@ class InternetArchiveGUI(QMainWindow):
 
         # Filtro de tipo de mídia
         mediatype_label = QLabel(self.t('search_type_label'))
-        mediatype_label.setStyleSheet('font-size: 13px; font-weight: bold;')
         self.mediatype_combo = QComboBox()
-        self.mediatype_combo.setStyleSheet('font-size: 13px; padding: 3px;')
         self.mediatype_combo.addItems([
             self.t('media_all'),
             self.t('media_audio'),
@@ -299,45 +289,44 @@ class InternetArchiveGUI(QMainWindow):
         ])
 
         self.search_archive_btn = QPushButton(self.t('search_button'))
-        self.search_archive_btn.setStyleSheet('font-size: 13px; font-weight: bold; padding: 5px 15px;')
         self.search_archive_btn.clicked.connect(self.search_archive)
 
         self.search_history_btn = QPushButton(self.t('search_history_button'))
-        self.search_history_btn.setStyleSheet('font-size: 13px; padding: 5px 15px;')
+        self.search_history_btn.setProperty("class", "secondary")
+        self.search_history_btn.setStyle(self.search_history_btn.style())
         self.search_history_btn.clicked.connect(self.show_search_history)
 
         search_layout.addWidget(search_label)
-        search_layout.addWidget(self.search_query_input)
+        search_layout.addWidget(self.search_query_input, 2)
         search_layout.addWidget(mediatype_label)
-        search_layout.addWidget(self.mediatype_combo)
+        search_layout.addWidget(self.mediatype_combo, 1)
         search_layout.addWidget(self.search_archive_btn)
         search_layout.addWidget(self.search_history_btn)
         layout.addLayout(search_layout)
 
         # Dica de sintaxe
         syntax_hint = QLabel(self.t('search_hint'))
-        syntax_hint.setStyleSheet('color: #555; font-size: 11px; font-style: italic; padding: 3px;')
+        syntax_hint.setProperty('class', 'note')
         syntax_hint.setWordWrap(True)
         layout.addWidget(syntax_hint)
 
         # Label dos resultados
         self.search_results_label = QLabel('')
-        self.search_results_label.setStyleSheet('font-size: 13px; font-weight: bold; padding: 5px;')
         layout.addWidget(self.search_results_label)
 
         # Controles de paginação
         pagination_layout = QHBoxLayout()
+        pagination_layout.setSpacing(12)
         self.prev_page_btn = QPushButton(self.t('search_previous'))
-        self.prev_page_btn.setStyleSheet('font-size: 12px; padding: 5px 15px;')
+        self.prev_page_btn.setProperty('class', 'secondary')
         self.prev_page_btn.clicked.connect(self.previous_page)
         self.prev_page_btn.setEnabled(False)
 
         self.page_info_label = QLabel('')
-        self.page_info_label.setStyleSheet('font-size: 12px; font-weight: bold;')
         self.page_info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self.next_page_btn = QPushButton(self.t('search_next'))
-        self.next_page_btn.setStyleSheet('font-size: 12px; padding: 5px 15px;')
+        self.next_page_btn.setProperty('class', 'secondary')
         self.next_page_btn.clicked.connect(self.next_page)
         self.next_page_btn.setEnabled(False)
 
@@ -348,15 +337,14 @@ class InternetArchiveGUI(QMainWindow):
 
         # Tabela de resultados
         results_hint = QLabel(self.t('search_results_hint'))
-        results_hint.setStyleSheet('font-size: 12px; padding: 3px;')
+        results_hint.setProperty('class', 'note')
         layout.addWidget(results_hint)
 
         self.search_results_table = QTableWidget()
-        self.search_results_table.setStyleSheet('font-size: 12px;')
-        self.search_results_table.setColumnCount(5)
+        self.search_results_table.setColumnCount(6)
         self.search_results_table.setHorizontalHeaderLabels([
             self.t('col_title'), self.t('col_identifier'), self.t('col_type'),
-            self.t('col_downloads'), self.t('col_description')
+            self.t('col_downloads'), self.t('col_matching_files'), self.t('col_description')
         ])
 
         # Configuração das colunas
@@ -364,7 +352,8 @@ class InternetArchiveGUI(QMainWindow):
         self.search_results_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)  # Identifier
         self.search_results_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)  # Tipo
         self.search_results_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)  # Downloads
-        self.search_results_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)  # Descrição
+        self.search_results_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)  # Matching Files
+        self.search_results_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)  # Descrição
 
         # Larguras iniciais
         self.search_results_table.setColumnWidth(0, 250)  # Título
@@ -381,6 +370,11 @@ class InternetArchiveGUI(QMainWindow):
         # Conecta clique no header para ordenação customizada
         self.search_results_table.horizontalHeader().sectionClicked.connect(self.sort_search_results)
         self.search_results_table.itemDoubleClicked.connect(self.load_item_from_search_table)
+
+        # Context menu para resultados de busca
+        self.search_results_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.search_results_table.customContextMenuRequested.connect(self.show_search_results_context_menu)
+
         layout.addWidget(self.search_results_table)
 
         return tab
@@ -455,10 +449,16 @@ class InternetArchiveGUI(QMainWindow):
                     'title': title,
                     'description': description,
                     'downloads': downloads,
-                    'mediatype': mediatype_result
+                    'mediatype': mediatype_result,
+                    'matching_files': None,  # Será carregado sob demanda
+                    'matching_files_list': None  # Lista completa de arquivos correspondentes
                 })
 
                 count += 1
+
+            # Armazena os termos de busca para filtragem de arquivos
+            if count > 0:
+                self.current_search_query = query
 
             if count == 0:
                 self.search_results_label.setText(self.t('no_results'))
@@ -503,7 +503,8 @@ class InternetArchiveGUI(QMainWindow):
             1: 'identifier',
             2: 'mediatype',
             3: 'downloads',
-            4: 'description'
+            4: 'matching_files',
+            5: 'description'
         }
 
         sort_key = column_keys.get(column)
@@ -513,9 +514,9 @@ class InternetArchiveGUI(QMainWindow):
         # Ordena o cache completo
         reverse = (self.current_sort_order == Qt.SortOrder.DescendingOrder)
 
-        if sort_key == 'downloads':
-            # Para downloads, ordena numericamente
-            self.search_results_cache.sort(key=lambda x: x[sort_key], reverse=reverse)
+        if sort_key in ['downloads', 'matching_files']:
+            # Para downloads e matching_files, ordena numericamente
+            self.search_results_cache.sort(key=lambda x: x.get(sort_key, 0) or 0, reverse=reverse)
         else:
             # Para texto, ordena alfabeticamente (case insensitive)
             self.search_results_cache.sort(key=lambda x: str(x[sort_key]).lower(), reverse=reverse)
@@ -539,6 +540,129 @@ class InternetArchiveGUI(QMainWindow):
             header.setSortIndicatorShown(True)
         else:
             header.setSortIndicatorShown(False)
+
+    def show_matching_files_dialog(self, identifier, title, matching_files):
+        """Mostra dialog com arquivos que correspondem à busca"""
+        from PyQt6.QtWidgets import QDialog
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(self.t('matching_files_title'))
+        dialog.setGeometry(150, 150, 900, 600)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(16)
+
+        # Cabeçalho com título e identifier
+        header_label = QLabel(f"<b>{title}</b><br><i>{identifier}</i>")
+        header_label.setWordWrap(True)
+        layout.addWidget(header_label)
+
+        if not matching_files or len(matching_files) == 0:
+            no_files_label = QLabel(self.t('no_matching_files'))
+            no_files_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            layout.addWidget(no_files_label)
+        else:
+            # Instrução
+            instruction_label = QLabel(self.t('matching_files_instruction', count=len(matching_files)))
+            instruction_label.setProperty('class', 'note')
+            layout.addWidget(instruction_label)
+
+            # Tabela de arquivos
+            files_table = QTableWidget()
+            files_table.setColumnCount(4)
+            files_table.setHorizontalHeaderLabels([
+                self.t('col_filename'), self.t('col_size'),
+                self.t('col_format'), self.t('col_action')
+            ])
+
+            files_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+            files_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+            files_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+            files_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+
+            files_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+            files_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+
+            for file_info in matching_files:
+                row = files_table.rowCount()
+                files_table.insertRow(row)
+
+                # Nome do arquivo
+                name_item = QTableWidgetItem(file_info['name'])
+                files_table.setItem(row, 0, name_item)
+
+                # Tamanho
+                size_item = QTableWidgetItem(format_size(file_info['size']))
+                files_table.setItem(row, 1, size_item)
+
+                # Formato
+                format_item = QTableWidgetItem(file_info['format'])
+                files_table.setItem(row, 2, format_item)
+
+                # Botão de ação (adicionar à fila)
+                add_btn = QPushButton(self.t('add_to_queue'))
+                add_btn.setProperty('class', 'success')
+                add_btn.clicked.connect(
+                    lambda _checked, id=identifier, fn=file_info['name'], sz=file_info['size']:
+                    self.add_file_to_queue_from_dialog(id, fn, sz)
+                )
+                files_table.setCellWidget(row, 3, add_btn)
+
+            layout.addWidget(files_table)
+
+        # Botões inferiores
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(12)
+
+        view_all_btn = QPushButton(self.t('view_all_files'))
+        view_all_btn.clicked.connect(lambda: self.view_all_files_from_dialog(identifier, dialog))
+        button_layout.addWidget(view_all_btn)
+
+        close_btn = QPushButton(self.t('close'))
+        close_btn.setProperty('class', 'secondary')
+        close_btn.clicked.connect(dialog.close)
+        button_layout.addWidget(close_btn)
+
+        layout.addLayout(button_layout)
+
+        dialog.exec()
+
+    def add_file_to_queue_from_dialog(self, identifier, filename, file_size):
+        """Adiciona arquivo à fila de downloads a partir do dialog"""
+        if not self.default_download_folder:
+            QMessageBox.warning(self, self.t('info_no_default_folder_title'),
+                              self.t('warn_no_default_folder'))
+            return
+
+        if filename in self.downloads:
+            QMessageBox.information(self, self.t('info_already_queued'),
+                                  self.t('warn_already_queued', filename=filename))
+            return
+
+        download_item = DownloadItem(identifier, filename, self.default_download_folder, segments=self.segments_per_file)
+        download_item.total_bytes = file_size
+        self.downloads[filename] = download_item
+        self.add_download_to_table(download_item)
+        self.download_manager.add_download(download_item)
+
+        log(f"[DIALOG-ADD] Arquivo adicionado: {filename} -> {self.default_download_folder}")
+        self.statusBar().showMessage(self.t('info_added_to_queue', filename=filename), 3000)
+
+    def view_all_files_from_dialog(self, identifier, dialog):
+        """Fecha o dialog e abre a aba de identifier com todos os arquivos"""
+        dialog.close()
+
+        # Define o identifier no campo da aba "Buscar por Identifier"
+        self.id_input.setText(identifier)
+
+        # Muda para a aba de identifier e busca os arquivos
+        self.tabs_widget.setCurrentIndex(1)  # Aba "Buscar por Identifier"
+
+        # Busca os arquivos
+        self.search_files()
+
+        log(f"[DIALOG] Visualizando todos os arquivos de: {identifier}")
 
     def update_search_page_display(self):
         """Atualiza a exibição da página atual de resultados"""
@@ -574,9 +698,18 @@ class InternetArchiveGUI(QMainWindow):
             downloads_item.setData(Qt.ItemDataRole.UserRole, result['downloads'])
             self.search_results_table.setItem(row, 3, downloads_item)
 
+            # Matching Files (mostrado apenas quando carregado via context menu)
+            files_display = '-'
+            if result['matching_files'] is not None:
+                files_display = str(result['matching_files']) if result['matching_files'] > 0 else '0'
+
+            files_item = QTableWidgetItem(files_display)
+            files_item.setData(Qt.ItemDataRole.UserRole, result.get('matching_files', 0))
+            self.search_results_table.setItem(row, 4, files_item)
+
             # Descrição
             desc_item = QTableWidgetItem(result['description'])
-            self.search_results_table.setItem(row, 4, desc_item)
+            self.search_results_table.setItem(row, 5, desc_item)
 
         # Atualiza label de informação
         self.search_results_label.setText(self.t('results_found', count=total_results))
@@ -607,8 +740,8 @@ class InternetArchiveGUI(QMainWindow):
             log(f"[PAGINATION] Navegando para página {self.current_search_page + 1}")
 
     def load_item_from_search_table(self, item):
-        """Carrega os arquivos de um item da busca (tabela)"""
-        # Pega o identifier da primeira coluna (Título) da linha clicada
+        """Carrega os arquivos de um item da busca (duplo clique)"""
+        # Pega o identifier da linha clicada
         row = item.row()
         title_item = self.search_results_table.item(row, 0)
         identifier = title_item.data(Qt.ItemDataRole.UserRole)
@@ -627,28 +760,133 @@ class InternetArchiveGUI(QMainWindow):
 
         log(f"[SEARCH] Carregando arquivos do item: {identifier}")
 
+    def show_search_results_context_menu(self, position):
+        """Mostra menu de contexto ao clicar com botão direito nos resultados de busca"""
+        # Pega o item clicado
+        item = self.search_results_table.itemAt(position)
+        if not item:
+            return
+
+        row = item.row()
+        title_item = self.search_results_table.item(row, 0)
+        identifier = title_item.data(Qt.ItemDataRole.UserRole)
+
+        if not identifier:
+            return
+
+        # Encontra o resultado no cache
+        result = None
+        for r in self.search_results_cache:
+            if r['identifier'] == identifier:
+                result = r
+                break
+
+        if not result:
+            return
+
+        # Cria o menu
+        context_menu = QMenu(self)
+
+        # Ação de mostrar arquivos correspondentes
+        show_files_action = context_menu.addAction(self.t('context_show_matching_files'))
+        show_files_action.triggered.connect(lambda: self.load_matching_files_async(result))
+
+        # Mostra o menu na posição do cursor
+        context_menu.exec(self.search_results_table.viewport().mapToGlobal(position))
+
+    def load_matching_files_async(self, result):
+        """Carrega arquivos correspondentes em background thread"""
+        identifier = result['identifier']
+        title = result['title']
+
+        # Se já carregou, mostra direto
+        if result['matching_files_list'] is not None:
+            self.show_matching_files_dialog(identifier, title, result['matching_files_list'])
+            return
+
+        # Mostra mensagem de carregamento
+        QMessageBox.information(self, self.t('info'), self.t('loading_matching_files'))
+
+        # Cria thread para carregar arquivos
+        from PyQt6.QtCore import QThread, pyqtSignal
+
+        class MatchingFilesThread(QThread):
+            finished = pyqtSignal(int, list)
+            error = pyqtSignal(str)
+
+            def __init__(self, identifier, query):
+                super().__init__()
+                self.identifier = identifier
+                self.query = query
+
+            def run(self):
+                try:
+                    item = ia.get_item(self.identifier)
+                    query_terms = self.query.lower().split()
+
+                    matching_files = []
+                    for file in item.files:
+                        filename = file.get('name', '').lower()
+
+                        # Verifica se algum termo de busca está no nome do arquivo
+                        if any(term in filename for term in query_terms):
+                            matching_files.append({
+                                'name': file.get('name', ''),
+                                'size': int(file.get('size', 0)),
+                                'format': file.get('format', 'N/A')
+                            })
+
+                    self.finished.emit(len(matching_files), matching_files)
+
+                except Exception as e:
+                    self.error.emit(str(e))
+
+        # Cria e inicia a thread
+        thread = MatchingFilesThread(identifier, self.current_search_query)
+
+        def on_finished(count, files):
+            result['matching_files'] = count
+            result['matching_files_list'] = files
+
+            # Atualiza a tabela
+            self.update_search_page_display()
+
+            # Mostra o dialog
+            self.show_matching_files_dialog(identifier, title, files)
+
+        def on_error(error_msg):
+            QMessageBox.critical(self, self.t('error'),
+                               self.t('error_loading_files', error=error_msg))
+
+        thread.finished.connect(on_finished)
+        thread.error.connect(on_error)
+        thread.start()
+
+        # Armazena referência para evitar garbage collection
+        self._matching_files_thread = thread
+
     def create_identifier_tab(self):
         tab = QWidget()
         layout = QVBoxLayout(tab)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(16)
 
         id_layout = QHBoxLayout()
+        id_layout.setSpacing(12)
         id_label = QLabel(self.t('identifier_label'))
-        id_label.setStyleSheet('font-size: 13px; font-weight: bold;')
         self.id_input = QLineEdit()
         self.id_input.setPlaceholderText(self.t('identifier_placeholder'))
-        self.id_input.setStyleSheet('font-size: 13px; padding: 5px;')
-        self.id_input.returnPressed.connect(self.search_files)  # Enter para buscar
+        self.id_input.returnPressed.connect(self.search_files)
 
         self.completer = QCompleter(self.recent_identifiers)
         self.completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self.id_input.setCompleter(self.completer)
 
         self.search_btn = QPushButton(self.t('search_files_button'))
-        self.search_btn.setStyleSheet('font-size: 13px; font-weight: bold; padding: 5px 15px;')
         self.search_btn.clicked.connect(self.search_files)
 
         self.history_btn = QPushButton(self.t('history_button'))
-        self.history_btn.setStyleSheet('font-size: 13px; padding: 5px 10px;')
+        self.history_btn.setProperty('class', 'secondary')
         self.history_btn.setToolTip(self.t('history_tooltip'))
         self.history_btn.clicked.connect(self.show_history)
 
@@ -663,14 +901,13 @@ class InternetArchiveGUI(QMainWindow):
             self.id_input.setText(self.last_identifier)
 
         filter_layout = QHBoxLayout()
+        filter_layout.setSpacing(12)
         filter_label = QLabel(self.t('filter_label'))
-        filter_label.setStyleSheet('font-size: 13px; font-weight: bold;')
         self.filter_input = QLineEdit()
         self.filter_input.setPlaceholderText(self.t('filter_placeholder'))
-        self.filter_input.setStyleSheet('font-size: 12px; padding: 5px;')
         self.filter_input.textChanged.connect(self.filter_files)
         self.clear_filter_btn = QPushButton('✕')
-        self.clear_filter_btn.setStyleSheet('font-size: 13px; padding: 5px;')
+        self.clear_filter_btn.setProperty('class', 'secondary')
         self.clear_filter_btn.setMaximumWidth(35)
         self.clear_filter_btn.setToolTip(self.t('clear_filter_tooltip'))
         self.clear_filter_btn.clicked.connect(lambda: self.filter_input.clear())
@@ -681,22 +918,19 @@ class InternetArchiveGUI(QMainWindow):
         layout.addLayout(filter_layout)
 
         list_label = QLabel(self.t('files_label'))
-        list_label.setStyleSheet('font-size: 12px; font-weight: bold; padding: 5px;')
         layout.addWidget(list_label)
 
         hint_label = QLabel(self.t('double_click_hint'))
-        hint_label.setStyleSheet('color: #555; font-size: 11px; font-style: italic; padding: 3px;')
+        hint_label.setProperty('class', 'note')
         layout.addWidget(hint_label)
 
         self.file_list = QListWidget()
-        self.file_list.setStyleSheet('font-size: 12px;')
         self.file_list.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
         self.file_list.itemDoubleClicked.connect(self.add_file_on_double_click)
         layout.addWidget(self.file_list)
 
         download_layout = QHBoxLayout()
         self.download_btn = QPushButton(self.t('add_to_queue_button'))
-        self.download_btn.setStyleSheet('font-size: 13px; font-weight: bold; padding: 8px 20px;')
         self.download_btn.clicked.connect(self.add_to_queue)
         self.download_btn.setEnabled(False)
         download_layout.addStretch()
@@ -704,51 +938,75 @@ class InternetArchiveGUI(QMainWindow):
         layout.addLayout(download_layout)
 
         self.status_label = QLabel('')
-        self.status_label.setStyleSheet('font-size: 12px; font-weight: bold; padding: 5px;')
         layout.addWidget(self.status_label)
 
         return tab
-    
-    def create_url_tab(self):
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
 
-        url_label = QLabel(self.t('url_label'))
-        url_label.setStyleSheet('font-size: 13px; font-weight: bold; padding: 5px;')
-        layout.addWidget(url_label)
-
-        self.url_input = QLineEdit()
-        self.url_input.setPlaceholderText(self.t('url_placeholder'))
-        self.url_input.setStyleSheet('font-size: 13px; padding: 8px;')
-        self.url_input.returnPressed.connect(self.add_url_to_queue)  # Enter para adicionar à fila
-        layout.addWidget(self.url_input)
-
-        url_example = QLabel(self.t('url_format'))
-        url_example.setStyleSheet('color: #555; font-size: 11px; padding: 3px;')
-        layout.addWidget(url_example)
-
-        self.direct_download_btn = QPushButton(self.t('direct_download_button'))
-        self.direct_download_btn.setStyleSheet('font-size: 13px; font-weight: bold; padding: 10px 20px;')
-        self.direct_download_btn.clicked.connect(self.add_url_to_queue)
-        layout.addWidget(self.direct_download_btn)
-
-        layout.addStretch()
-        return tab
-    
     def create_download_manager_tab(self):
         tab = QWidget()
         layout = QVBoxLayout(tab)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(16)
 
+        # Toolbar with action buttons
+        toolbar_layout = QHBoxLayout()
+        toolbar_layout.setSpacing(8)
+
+        self.pause_resume_btn = QPushButton("⏸ " + self.t('action_pause'))
+        self.pause_resume_btn.setProperty('class', 'secondary')
+        self.pause_resume_btn.clicked.connect(self.toolbar_pause_resume)
+        self.pause_resume_btn.setEnabled(False)
+
+        self.cancel_btn = QPushButton("✕ " + self.t('action_cancel'))
+        self.cancel_btn.setProperty('class', 'danger')
+        self.cancel_btn.clicked.connect(self.toolbar_cancel)
+        self.cancel_btn.setEnabled(False)
+
+        self.restart_btn = QPushButton("↻ " + self.t('action_restart'))
+        self.restart_btn.setProperty('class', 'success')
+        self.restart_btn.clicked.connect(self.toolbar_restart)
+        self.restart_btn.setEnabled(False)
+
+        self.remove_btn = QPushButton("🗑 " + self.t('action_remove'))
+        self.remove_btn.setProperty('class', 'secondary')
+        self.remove_btn.clicked.connect(self.toolbar_remove)
+        self.remove_btn.setEnabled(False)
+
+        toolbar_layout.addWidget(self.pause_resume_btn)
+        toolbar_layout.addWidget(self.cancel_btn)
+        toolbar_layout.addWidget(self.restart_btn)
+        toolbar_layout.addWidget(self.remove_btn)
+        toolbar_layout.addStretch()
+
+        self.add_url_btn = QPushButton("🔗 " + self.t('add_url_button'))
+        self.add_url_btn.clicked.connect(self.show_add_url_dialog)
+
+        self.clear_completed_btn = QPushButton(self.t('dm_clear_completed'))
+        self.clear_completed_btn.setProperty('class', 'secondary')
+        self.clear_completed_btn.clicked.connect(self.clear_completed)
+
+        self.cancel_all_btn = QPushButton(self.t('dm_cancel_all'))
+        self.cancel_all_btn.setProperty("class", "danger")
+        self.cancel_all_btn.clicked.connect(self.cancel_all)
+
+        toolbar_layout.addWidget(self.add_url_btn)
+        toolbar_layout.addWidget(self.clear_completed_btn)
+        toolbar_layout.addWidget(self.cancel_all_btn)
+
+        layout.addLayout(toolbar_layout)
+
+        # Download table
         self.download_table = QTableWidget()
-        self.download_table.setStyleSheet('font-size: 12px;')
-        self.download_table.setColumnCount(8)
+        self.download_table.setColumnCount(7)
         self.download_table.setHorizontalHeaderLabels([
             self.t('dm_col_file'), self.t('dm_col_status'), self.t('dm_col_progress'),
             self.t('dm_col_size'), self.t('dm_col_speed'), self.t('dm_col_connections'),
-            self.t('dm_col_actions'), self.t('dm_col_message')
+            self.t('dm_col_message')
         ])
         # Aumenta altura das linhas para melhor visibilidade
         self.download_table.verticalHeader().setDefaultSectionSize(35)
+        # Esconde o header vertical (números de linha) que aparecia como caixas pretas
+        self.download_table.verticalHeader().setVisible(False)
 
         self.download_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.download_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
@@ -756,91 +1014,166 @@ class InternetArchiveGUI(QMainWindow):
         self.download_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         self.download_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         self.download_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)  # Conexões
-        self.download_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)  # Ações
-        self.download_table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.Stretch)  # Mensagem
+        self.download_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)  # Mensagem
         self.download_table.setColumnWidth(2, 200)
         self.download_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.download_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.download_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.download_table.customContextMenuRequested.connect(self.show_context_menu)
         self.download_table.cellDoubleClicked.connect(self.on_download_table_double_click)
+        self.download_table.itemSelectionChanged.connect(self.update_toolbar_buttons)
 
         layout.addWidget(self.download_table)
 
-        control_layout = QHBoxLayout()
-        self.clear_completed_btn = QPushButton(self.t('dm_clear_completed'))
-        self.clear_completed_btn.setStyleSheet('font-size: 12px; padding: 6px 12px;')
-        self.clear_completed_btn.clicked.connect(self.clear_completed)
-        self.cancel_all_btn = QPushButton(self.t('dm_cancel_all'))
-        self.cancel_all_btn.setStyleSheet('font-size: 12px; padding: 6px 12px;')
-        self.cancel_all_btn.clicked.connect(self.cancel_all)
-
-        control_layout.addWidget(self.clear_completed_btn)
-        control_layout.addWidget(self.cancel_all_btn)
-        control_layout.addStretch()
-        layout.addLayout(control_layout)
-
         return tab
+
+    def update_toolbar_buttons(self):
+        """Atualiza estado dos botões da toolbar baseado na seleção"""
+        selected_rows = self.download_table.selectionModel().selectedRows()
+        has_selection = len(selected_rows) > 0
+
+        if not has_selection:
+            self.pause_resume_btn.setEnabled(False)
+            self.cancel_btn.setEnabled(False)
+            self.restart_btn.setEnabled(False)
+            self.remove_btn.setEnabled(False)
+            return
+
+        # Pega o primeiro item selecionado para determinar estado dos botões
+        row = selected_rows[0].row()
+        filename = self.download_table.item(row, 0).text()
+
+        if filename in self.downloads:
+            download_item = self.downloads[filename]
+            status = download_item.status
+
+            # Botão Pause/Resume
+            if status in [DownloadStatus.DOWNLOADING, DownloadStatus.PAUSED, DownloadStatus.WAITING]:
+                self.pause_resume_btn.setEnabled(True)
+                if status == DownloadStatus.PAUSED:
+                    self.pause_resume_btn.setText("▶ " + self.t('action_resume'))
+                else:
+                    self.pause_resume_btn.setText("⏸ " + self.t('action_pause'))
+            else:
+                self.pause_resume_btn.setEnabled(False)
+
+            # Botão Cancel
+            self.cancel_btn.setEnabled(status not in [DownloadStatus.CANCELLED, DownloadStatus.COMPLETED])
+
+            # Botão Restart
+            self.restart_btn.setEnabled(status == DownloadStatus.CANCELLED)
+
+            # Botão Remove - sempre habilitado quando há seleção
+            self.remove_btn.setEnabled(True)
+
+    def toolbar_pause_resume(self):
+        """Pausa ou resume o download selecionado"""
+        selected_rows = self.download_table.selectionModel().selectedRows()
+        if not selected_rows:
+            return
+
+        row = selected_rows[0].row()
+        filename = self.download_table.item(row, 0).text()
+        self.toggle_pause(filename)
+
+    def toolbar_cancel(self):
+        """Cancela o download selecionado"""
+        selected_rows = self.download_table.selectionModel().selectedRows()
+        if not selected_rows:
+            return
+
+        row = selected_rows[0].row()
+        filename = self.download_table.item(row, 0).text()
+        self.cancel_download(filename)
+
+    def toolbar_restart(self):
+        """Reinicia o download selecionado"""
+        selected_rows = self.download_table.selectionModel().selectedRows()
+        if not selected_rows:
+            return
+
+        row = selected_rows[0].row()
+        filename = self.download_table.item(row, 0).text()
+        self.restart_download(filename)
+
+    def toolbar_remove(self):
+        """Remove o download selecionado da lista"""
+        selected_rows = self.download_table.selectionModel().selectedRows()
+        if not selected_rows:
+            return
+
+        row = selected_rows[0].row()
+        filename = self.download_table.item(row, 0).text()
+
+        if filename in self.downloads:
+            download_item = self.downloads[filename]
+
+            # Só permite remover se estiver concluído, cancelado ou com erro
+            if download_item.status in [DownloadStatus.COMPLETED, DownloadStatus.CANCELLED, DownloadStatus.ERROR]:
+                del self.downloads[filename]
+                self.download_table.removeRow(row)
+                self.save_downloads()
+            else:
+                QMessageBox.warning(self, self.t('warning'),
+                                  self.t('warn_remove_active'))
 
     def create_settings_tab(self):
         tab = QWidget()
         layout = QVBoxLayout(tab)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(16)
 
         # Título
         title = QLabel(self.t('settings_title'))
-        title.setStyleSheet('font-size: 18px; font-weight: bold; padding: 5px;')
+        title.setProperty('class', 'section-header')
         layout.addWidget(title)
 
         layout.addSpacing(10)
 
         # Seção: Conta do Internet Archive
         account_group_label = QLabel(self.t('account_section'))
-        account_group_label.setStyleSheet('font-size: 14px; font-weight: bold;')
+        account_group_label.setProperty('class', 'subsection-header')
         layout.addWidget(account_group_label)
 
         account_desc = QLabel(self.t('account_description'))
-        account_desc.setStyleSheet('font-size: 12px;')
         layout.addWidget(account_desc)
 
         # Status da conta
         self.account_status_label = QLabel()
-        self.account_status_label.setStyleSheet('font-size: 12px; padding: 5px;')
         self.update_account_status()
         layout.addWidget(self.account_status_label)
 
         # Email
         email_layout = QHBoxLayout()
+        email_layout.setSpacing(12)
         email_label = QLabel(self.t('account_email'))
-        email_label.setStyleSheet('font-size: 12px;')
         email_label.setMinimumWidth(80)
         self.ia_email_input = QLineEdit()
         self.ia_email_input.setPlaceholderText(self.t('account_email_placeholder'))
-        self.ia_email_input.setStyleSheet('font-size: 12px; padding: 5px;')
         email_layout.addWidget(email_label)
         email_layout.addWidget(self.ia_email_input)
         layout.addLayout(email_layout)
 
         # Senha
         password_layout = QHBoxLayout()
+        password_layout.setSpacing(12)
         password_label = QLabel(self.t('account_password'))
-        password_label.setStyleSheet('font-size: 12px;')
         password_label.setMinimumWidth(80)
         self.ia_password_input = QLineEdit()
         self.ia_password_input.setPlaceholderText(self.t('account_password_placeholder'))
         self.ia_password_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.ia_password_input.setStyleSheet('font-size: 12px; padding: 5px;')
         password_layout.addWidget(password_label)
         password_layout.addWidget(self.ia_password_input)
         layout.addLayout(password_layout)
 
         # Botões de ação
         account_buttons_layout = QHBoxLayout()
+        account_buttons_layout.setSpacing(12)
         self.ia_login_btn = QPushButton(self.t('account_login'))
-        self.ia_login_btn.setStyleSheet('font-size: 12px; padding: 6px 12px;')
         self.ia_login_btn.clicked.connect(self.ia_login)
 
         self.ia_logout_btn = QPushButton(self.t('account_logout'))
-        self.ia_logout_btn.setStyleSheet('font-size: 12px; padding: 6px 12px;')
+        self.ia_logout_btn.setProperty('class', 'secondary')
         self.ia_logout_btn.clicked.connect(self.ia_logout)
 
         account_buttons_layout.addWidget(self.ia_login_btn)
@@ -849,7 +1182,7 @@ class InternetArchiveGUI(QMainWindow):
         layout.addLayout(account_buttons_layout)
 
         account_note = QLabel(self.t('account_note'))
-        account_note.setStyleSheet('color: #555; font-size: 11px; font-style: italic;')
+        account_note.setProperty('class', 'note')
         account_note.setWordWrap(True)
         layout.addWidget(account_note)
 
@@ -857,28 +1190,26 @@ class InternetArchiveGUI(QMainWindow):
 
         # Seção: Pasta Padrão
         folder_group_label = QLabel(self.t('folder_section'))
-        folder_group_label.setStyleSheet('font-size: 14px; font-weight: bold;')
+        folder_group_label.setProperty('class', 'subsection-header')
         layout.addWidget(folder_group_label)
 
         folder_layout = QHBoxLayout()
         folder_desc = QLabel(self.t('folder_description'))
-        folder_desc.setStyleSheet('font-size: 12px;')
         folder_layout.addWidget(folder_desc)
         layout.addLayout(folder_layout)
 
         folder_control_layout = QHBoxLayout()
+        folder_control_layout.setSpacing(12)
         self.default_folder_input = QLineEdit()
         self.default_folder_input.setPlaceholderText(self.t('folder_placeholder'))
         self.default_folder_input.setText(self.default_download_folder)
-        self.default_folder_input.setStyleSheet('font-size: 12px; padding: 5px;')
         self.default_folder_input.setReadOnly(True)
 
         self.choose_folder_btn = QPushButton(self.t('folder_choose'))
-        self.choose_folder_btn.setStyleSheet('font-size: 12px; padding: 6px 12px;')
         self.choose_folder_btn.clicked.connect(self.choose_default_folder)
 
         self.clear_folder_btn = QPushButton(self.t('folder_clear'))
-        self.clear_folder_btn.setStyleSheet('font-size: 12px; padding: 6px 12px;')
+        self.clear_folder_btn.setProperty('class', 'secondary')
         self.clear_folder_btn.clicked.connect(self.clear_default_folder)
 
         folder_control_layout.addWidget(self.default_folder_input)
@@ -890,15 +1221,14 @@ class InternetArchiveGUI(QMainWindow):
 
         # Seção: Performance
         perf_group_label = QLabel(self.t('perf_section'))
-        perf_group_label.setStyleSheet('font-size: 14px; font-weight: bold;')
+        perf_group_label.setProperty('class', 'subsection-header')
         layout.addWidget(perf_group_label)
 
         concurrent_layout = QHBoxLayout()
+        concurrent_layout.setSpacing(12)
         concurrent_label = QLabel(self.t('perf_concurrent'))
-        concurrent_label.setStyleSheet('font-size: 12px;')
         concurrent_label.setToolTip(self.t('perf_concurrent_tooltip'))
         self.concurrent_spin = QSpinBox()
-        self.concurrent_spin.setStyleSheet('font-size: 12px;')
         self.concurrent_spin.setMinimum(1)
         self.concurrent_spin.setMaximum(10)
         self.concurrent_spin.setValue(self.max_concurrent)
@@ -909,11 +1239,10 @@ class InternetArchiveGUI(QMainWindow):
         layout.addLayout(concurrent_layout)
 
         segments_layout = QHBoxLayout()
+        segments_layout.setSpacing(12)
         segments_label = QLabel(self.t('perf_connections'))
-        segments_label.setStyleSheet('font-size: 12px;')
         segments_label.setToolTip(self.t('perf_connections_tooltip'))
         self.segments_spin = QSpinBox()
-        self.segments_spin.setStyleSheet('font-size: 12px;')
         self.segments_spin.setMinimum(1)
         self.segments_spin.setMaximum(16)
         self.segments_spin.setValue(self.segments_per_file)
@@ -927,7 +1256,7 @@ class InternetArchiveGUI(QMainWindow):
         layout.addSpacing(10)
 
         perf_note = QLabel(self.t('perf_note'))
-        perf_note.setStyleSheet('color: #555; font-size: 11px; font-style: italic;')
+        perf_note.setProperty('class', 'note')
         perf_note.setWordWrap(True)
         layout.addWidget(perf_note)
 
@@ -935,17 +1264,16 @@ class InternetArchiveGUI(QMainWindow):
 
         # Seção: Debug e Logs
         debug_group_label = QLabel(self.t('debug_section'))
-        debug_group_label.setStyleSheet('font-size: 14px; font-weight: bold;')
+        debug_group_label.setProperty('class', 'subsection-header')
         layout.addWidget(debug_group_label)
 
         self.enable_logging_checkbox = QCheckBox(self.t('debug_logging'))
-        self.enable_logging_checkbox.setStyleSheet('font-size: 12px;')
         self.enable_logging_checkbox.setChecked(self.settings.value('enable_logging', True, type=bool))
         self.enable_logging_checkbox.stateChanged.connect(self.toggle_logging)
         layout.addWidget(self.enable_logging_checkbox)
 
         logging_note = QLabel(self.t('debug_note'))
-        logging_note.setStyleSheet('color: #555; font-size: 11px; font-style: italic;')
+        logging_note.setProperty('class', 'note')
         logging_note.setWordWrap(True)
         layout.addWidget(logging_note)
 
@@ -953,14 +1281,13 @@ class InternetArchiveGUI(QMainWindow):
 
         # Seção: Idioma / Language
         language_group_label = QLabel('🌐 Idioma / Language')
-        language_group_label.setStyleSheet('font-size: 14px; font-weight: bold;')
+        language_group_label.setProperty('class', 'subsection-header')
         layout.addWidget(language_group_label)
 
         language_layout = QHBoxLayout()
+        language_layout.setSpacing(12)
         language_label = QLabel('Idioma da interface / Interface language:')
-        language_label.setStyleSheet('font-size: 12px;')
         self.language_combo = QComboBox()
-        self.language_combo.setStyleSheet('font-size: 12px; padding: 3px;')
         self.language_combo.addItem('Português (Brasil)', 'pt-BR')
         self.language_combo.addItem('English (US)', 'en')
 
@@ -976,7 +1303,7 @@ class InternetArchiveGUI(QMainWindow):
         layout.addLayout(language_layout)
 
         language_note = QLabel('💡 Nota: O aplicativo será reiniciado para aplicar o novo idioma\n💡 Note: The application will restart to apply the new language')
-        language_note.setStyleSheet('color: #555; font-size: 11px; font-style: italic;')
+        language_note.setProperty('class', 'note')
         language_note.setWordWrap(True)
         layout.addWidget(language_note)
 
@@ -1004,7 +1331,7 @@ class InternetArchiveGUI(QMainWindow):
                 # Tenta identificar o email se possível
                 email = getattr(session, 'user_email', None) or 'configurada'
                 self.account_status_label.setText(self.t('account_configured'))
-                self.account_status_label.setStyleSheet('font-size: 12px; padding: 5px; color: green; font-weight: bold;')
+                self.account_status_label.setProperty('class', 'success')
                 log(f"[ACCOUNT] Conta detectada: {email}")
                 return
 
@@ -1022,12 +1349,12 @@ class InternetArchiveGUI(QMainWindow):
                         content = f.read()
                         if 'cookies' in content or 'access' in content or 'secret' in content:
                             self.account_status_label.setText(self.t('account_configured_file'))
-                            self.account_status_label.setStyleSheet('font-size: 12px; padding: 5px; color: green; font-weight: bold;')
+                            self.account_status_label.setProperty('class', 'success')
                             log(f"[ACCOUNT] Credenciais encontradas em: {config_file}")
                             return
 
             self.account_status_label.setText(self.t('account_not_configured'))
-            self.account_status_label.setStyleSheet('font-size: 12px; padding: 5px; color: #888;')
+            self.account_status_label.setProperty('class', 'muted')
             log("[ACCOUNT] Nenhuma credencial encontrada")
 
         except Exception as e:
@@ -1035,7 +1362,7 @@ class InternetArchiveGUI(QMainWindow):
             import traceback
             traceback.print_exc()
             self.account_status_label.setText(self.t('account_unknown'))
-            self.account_status_label.setStyleSheet('font-size: 12px; padding: 5px; color: #888;')
+            self.account_status_label.setProperty('class', 'muted')
 
     def ia_login(self):
         """Faz login na conta do Internet Archive"""
@@ -1285,9 +1612,21 @@ class InternetArchiveGUI(QMainWindow):
         QMessageBox.information(self, self.t('success'),
                               self.t('info_files_added', count=len(selected_items)))
     
-    def add_url_to_queue(self):
-        url = self.url_input.text().strip()
+    def show_add_url_dialog(self):
+        """Mostra dialog para adicionar URL"""
+        url, ok = QInputDialog.getText(
+            self,
+            self.t('add_url_title'),
+            self.t('add_url_prompt'),
+            QLineEdit.EchoMode.Normal,
+            ""
+        )
 
+        if ok and url:
+            self.add_url_to_queue(url.strip())
+
+    def add_url_to_queue(self, url):
+        """Adiciona URL à fila de downloads"""
         if not url:
             QMessageBox.warning(self, self.t('warning'), self.t('warn_url_empty'))
             return
@@ -1310,7 +1649,6 @@ class InternetArchiveGUI(QMainWindow):
         self.download_manager.add_download(download_item)
 
         QMessageBox.information(self, self.t('success'), self.t('info_file_added'))
-        self.url_input.clear()
     
     def add_download_to_table(self, download_item):
         row = self.download_table.rowCount()
@@ -1379,31 +1717,8 @@ class InternetArchiveGUI(QMainWindow):
         connections_item.setToolTip(self.t('tooltip_connections', count=download_item.segments))
         self.download_table.setItem(row, 5, connections_item)
 
-        actions_widget = QWidget()
-        actions_layout = QHBoxLayout(actions_widget)
-        actions_layout.setContentsMargins(2, 2, 2, 2)
-
-        # Texto do botão baseado no status atual
-        pause_btn_text = self.t('action_resume') if download_item.status == DownloadStatus.PAUSED else self.t('action_pause')
-        pause_btn = QPushButton(pause_btn_text)
-        pause_btn.setStyleSheet('font-size: 11px; padding: 4px 8px;')
-        pause_btn.clicked.connect(lambda: self.toggle_pause(download_item.filename))
-
-        # Botão Cancelar/Recomeçar
-        if download_item.status == DownloadStatus.CANCELLED:
-            cancel_btn = QPushButton(self.t('action_restart'))
-            cancel_btn.setStyleSheet('font-size: 11px; padding: 4px 8px;')
-            cancel_btn.clicked.connect(lambda: self.restart_download(download_item.filename))
-        else:
-            cancel_btn = QPushButton(self.t('action_cancel'))
-            cancel_btn.setStyleSheet('font-size: 11px; padding: 4px 8px;')
-            cancel_btn.clicked.connect(lambda: self.cancel_download(download_item.filename))
-
-        actions_layout.addWidget(pause_btn)
-        actions_layout.addWidget(cancel_btn)
-        self.download_table.setCellWidget(row, 6, actions_widget)
-
-        self.download_table.setItem(row, 7, QTableWidgetItem(download_item.error_msg))
+        # Coluna de mensagem
+        self.download_table.setItem(row, 6, QTableWidgetItem(download_item.error_msg))
     
     def on_download_started(self, filename):
         if filename in self.downloads:
@@ -1510,35 +1825,13 @@ class InternetArchiveGUI(QMainWindow):
                 elif status == DownloadStatus.WAITING:
                     status_item.setBackground(QColor(240, 240, 255))  # Azul muito claro
                     status_item.setForeground(QColor(0, 0, 139))  # Azul escuro
-                
-                # Atualiza o botão baseado no novo status
-                actions_widget = self.download_table.cellWidget(row, 6)
-                if actions_widget:
-                    pause_btn = actions_widget.layout().itemAt(0).widget()
-                    cancel_btn = actions_widget.layout().itemAt(1).widget()
 
-                    # Atualiza botão Pausar/Retomar
-                    if status == DownloadStatus.DOWNLOADING:
-                        pause_btn.setText(self.t('action_pause'))
-                    elif status == DownloadStatus.PAUSED:
-                        pause_btn.setText(self.t('action_resume'))
-                    elif status == DownloadStatus.WAITING:
-                        pause_btn.setText(self.t('action_pause'))
-
-                    # Atualiza botão Cancelar/Recomeçar
-                    if status == DownloadStatus.CANCELLED:
-                        # Reconecta o botão para recomeçar
-                        cancel_btn.setText(self.t('action_restart'))
-                        cancel_btn.clicked.disconnect()
-                        cancel_btn.clicked.connect(lambda fn=filename: self.restart_download(fn))
-                    elif cancel_btn.text() == self.t('action_restart'):
-                        # Se estava como "Recomeçar" mas não está mais cancelado, volta para "Cancelar"
-                        cancel_btn.setText(self.t('action_cancel'))
-                        cancel_btn.clicked.disconnect()
-                        cancel_btn.clicked.connect(lambda fn=filename: self.cancel_download(fn))
-
-                msg_item = self.download_table.item(row, 7)
+                # Atualiza mensagem de erro
+                msg_item = self.download_table.item(row, 6)
                 msg_item.setText(error_msg)
+
+                # Atualiza botões da toolbar se esta linha estiver selecionada
+                self.update_toolbar_buttons()
                 break
     
     def toggle_pause(self, filename):
@@ -1554,55 +1847,53 @@ class InternetArchiveGUI(QMainWindow):
                 # Adiciona à fila para iniciar
                 self.download_manager.add_download(download_item)
                 download_item.status = DownloadStatus.WAITING
-                
+
                 # Atualiza GUI
                 for row in range(self.download_table.rowCount()):
                     if self.download_table.item(row, 0).text() == filename:
-                        actions_widget = self.download_table.cellWidget(row, 6)
-                        if actions_widget:
-                            pause_btn = actions_widget.layout().itemAt(0).widget()
-                            pause_btn.setText(self.t('action_pause'))
                         status_item = self.download_table.item(row, 1)
                         status_item.setText(DownloadStatus.WAITING.value)
                         status_item.setBackground(QColor(255, 255, 255))
                         break
+
+                self.update_toolbar_buttons()
             return
-        
+
         # Se tem thread rodando, pausa ou retoma
-        for row in range(self.download_table.rowCount()):
-            if self.download_table.item(row, 0).text() == filename:
-                actions_widget = self.download_table.cellWidget(row, 6)
-                if not actions_widget:
-                    return
-                    
-                pause_btn = actions_widget.layout().itemAt(0).widget()
-                
-                if download_item.status == DownloadStatus.DOWNLOADING:
-                    # Pausa a thread
-                    download_item.thread.pause()
-                    download_item.status = DownloadStatus.PAUSED
-                    pause_btn.setText(self.t('action_resume'))
+        if download_item.status == DownloadStatus.DOWNLOADING:
+            # Pausa a thread
+            download_item.thread.pause()
+            download_item.status = DownloadStatus.PAUSED
+
+            for row in range(self.download_table.rowCount()):
+                if self.download_table.item(row, 0).text() == filename:
                     status_item = self.download_table.item(row, 1)
                     status_item.setText(DownloadStatus.PAUSED.value)
                     status_item.setBackground(QColor(255, 255, 224))
-                    self.save_downloads()
+                    break
 
-                elif download_item.status == DownloadStatus.PAUSED:
-                    # Retoma a thread
-                    download_item.thread.resume()
-                    download_item.status = DownloadStatus.DOWNLOADING
-                    pause_btn.setText(self.t('action_pause'))
+            self.save_downloads()
+            self.update_toolbar_buttons()
+
+        elif download_item.status == DownloadStatus.PAUSED:
+            # Retoma a thread
+            download_item.thread.resume()
+            download_item.status = DownloadStatus.DOWNLOADING
+
+            for row in range(self.download_table.rowCount()):
+                if self.download_table.item(row, 0).text() == filename:
                     status_item = self.download_table.item(row, 1)
                     status_item.setText(DownloadStatus.DOWNLOADING.value)
                     status_item.setBackground(QColor(173, 216, 230))
-                    self.save_downloads()
-                    
-                elif download_item.status == DownloadStatus.WAITING:
-                    # Se está aguardando mas tem thread, não faz nada
-                    # Aguarda iniciar para depois poder pausar
-                    pass
-                    
-                break
+                    break
+
+            self.save_downloads()
+            self.update_toolbar_buttons()
+
+        elif download_item.status == DownloadStatus.WAITING:
+            # Se está aguardando mas tem thread, não faz nada
+            # Aguarda iniciar para depois poder pausar
+            pass
     
     def cancel_download(self, filename):
         if filename not in self.downloads:
@@ -1688,34 +1979,14 @@ class InternetArchiveGUI(QMainWindow):
                     speed_item.setText("0 B/s")
 
                 # Limpa mensagem de erro
-                msg_item = self.download_table.item(row, 7)
+                msg_item = self.download_table.item(row, 6)
                 if msg_item:
                     msg_item.setText("")
 
-                # Atualiza botões
-                actions_widget = self.download_table.cellWidget(row, 6)
-                if actions_widget:
-                    # Remove o widget antigo e cria um novo
-                    self.download_table.removeCellWidget(row, 6)
-
-                    # Cria novo widget de ações
-                    new_actions_widget = QWidget()
-                    new_actions_layout = QHBoxLayout(new_actions_widget)
-                    new_actions_layout.setContentsMargins(2, 2, 2, 2)
-
-                    pause_btn = QPushButton(self.t('action_pause'))
-                    pause_btn.setStyleSheet('font-size: 11px; padding: 4px 8px;')
-                    pause_btn.clicked.connect(lambda: self.toggle_pause(filename))
-
-                    cancel_btn = QPushButton(self.t('action_cancel'))
-                    cancel_btn.setStyleSheet('font-size: 11px; padding: 4px 8px;')
-                    cancel_btn.clicked.connect(lambda: self.cancel_download(filename))
-
-                    new_actions_layout.addWidget(pause_btn)
-                    new_actions_layout.addWidget(cancel_btn)
-                    self.download_table.setCellWidget(row, 6, new_actions_widget)
-
                 break
+
+        # Atualiza toolbar
+        self.update_toolbar_buttons()
     
     def clear_completed(self):
         rows_to_remove = []
@@ -1795,9 +2066,9 @@ class InternetArchiveGUI(QMainWindow):
         row = item.row()
         column = item.column()
 
-        # Menu para coluna de mensagem (coluna 7)
-        if column == 7:
-            msg_item = self.download_table.item(row, 7)
+        # Menu para coluna de mensagem (coluna 6)
+        if column == 6:
+            msg_item = self.download_table.item(row, 6)
             if msg_item and msg_item.text():
                 # Cria o menu
                 menu = QApplication.instance().sender().parentWidget().window()

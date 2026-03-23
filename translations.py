@@ -40,6 +40,7 @@ TRANSLATIONS = {
         'col_identifier': 'Identifier',
         'col_type': 'Tipo',
         'col_downloads': 'Downloads',
+        'col_matching_files': 'Arquivos',
         'col_description': 'Descrição',
 
         # Search results messages
@@ -92,6 +93,13 @@ TRANSLATIONS = {
         'action_resume': 'Retomar',
         'action_cancel': 'Cancelar',
         'action_restart': 'Recomeçar',
+        'action_remove': 'Remover',
+        'add_url_button': 'Adicionar URL',
+        'add_url_title': 'Adicionar Download por URL',
+        'add_url_prompt': 'Digite a URL do arquivo para download:',
+
+        # Warnings
+        'warn_remove_active': 'Não é possível remover um download ativo. Cancele ou aguarde a conclusão primeiro.',
 
         # Settings Tab
         'settings_title': 'Configurações Gerais',
@@ -196,10 +204,25 @@ TRANSLATIONS = {
         'confirm_clear_search_history': 'Deseja realmente limpar todo o histórico de buscas?',
         'success_search_history_cleared': 'Histórico de buscas limpo com sucesso!',
 
+        # Matching files dialog
+        'matching_files_title': 'Arquivos Correspondentes',
+        'no_matching_files': 'Nenhum arquivo corresponde aos termos da busca.',
+        'matching_files_instruction': 'Encontrados {count} arquivo(s) correspondente(s). Clique em "Adicionar" para baixar ou "Ver Todos" para visualizar todos os arquivos do item.',
+        'loading_matching_files': 'Carregando arquivos correspondentes...',
+        'error_loading_files': 'Erro ao carregar arquivos:\n{error}',
+        'col_filename': 'Nome do Arquivo',
+        'col_size': 'Tamanho',
+        'col_format': 'Formato',
+        'col_action': 'Ação',
+        'add_to_queue': '+ Adicionar',
+        'view_all_files': '📋 Ver Todos os Arquivos',
+        'close': 'Fechar',
+
         # Context menu
         'context_copy': '📋 Copiar mensagem',
         'context_open_file': '📂 Abrir arquivo',
         'context_open_folder': '📁 Abrir pasta',
+        'context_show_matching_files': '🔍 Mostrar Arquivos Correspondentes',
 
         # Tooltips
         'tooltip_connections': '{count} conexão(ões) simultânea(s)',
@@ -261,6 +284,7 @@ TRANSLATIONS = {
         'col_identifier': 'Identifier',
         'col_type': 'Type',
         'col_downloads': 'Downloads',
+        'col_matching_files': 'Files',
         'col_description': 'Description',
 
         # Search results messages
@@ -313,6 +337,13 @@ TRANSLATIONS = {
         'action_resume': 'Resume',
         'action_cancel': 'Cancel',
         'action_restart': 'Restart',
+        'action_remove': 'Remove',
+        'add_url_button': 'Add URL',
+        'add_url_title': 'Add Download by URL',
+        'add_url_prompt': 'Enter the file URL to download:',
+
+        # Warnings
+        'warn_remove_active': 'Cannot remove an active download. Please cancel or wait for completion first.',
 
         # Settings Tab
         'settings_title': 'General Settings',
@@ -417,10 +448,25 @@ TRANSLATIONS = {
         'confirm_clear_search_history': 'Do you really want to clear all search history?',
         'success_search_history_cleared': 'Search history cleared successfully!',
 
+        # Matching files dialog
+        'matching_files_title': 'Matching Files',
+        'no_matching_files': 'No files match the search terms.',
+        'matching_files_instruction': 'Found {count} matching file(s). Click "Add" to download or "View All" to see all files in the item.',
+        'loading_matching_files': 'Loading matching files...',
+        'error_loading_files': 'Error loading files:\n{error}',
+        'col_filename': 'Filename',
+        'col_size': 'Size',
+        'col_format': 'Format',
+        'col_action': 'Action',
+        'add_to_queue': '+ Add',
+        'view_all_files': '📋 View All Files',
+        'close': 'Close',
+
         # Context menu
         'context_copy': '📋 Copy message',
         'context_open_file': '📂 Open File',
         'context_open_folder': '📁 Open Folder',
+        'context_show_matching_files': '🔍 Show Matching Files',
 
         # Tooltips
         'tooltip_connections': '{count} simultaneous connection(s)',
