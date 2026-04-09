@@ -7,14 +7,34 @@ import os
 import subprocess
 import platform
 import internetarchive as ia
+from urllib.parse import unquote
 
 from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout,
-    QHBoxLayout, QLineEdit, QPushButton, QListWidget,
-    QLabel, QFileDialog, QProgressBar, QMessageBox,
-    QTabWidget, QListWidgetItem, QSpinBox, QTableWidget,
-    QTableWidgetItem, QHeaderView, QAbstractItemView,
-    QCompleter, QMenu, QCheckBox, QDialog, QComboBox, QInputDialog
+    QApplication,
+    QMainWindow,
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLineEdit,
+    QPushButton,
+    QListWidget,
+    QLabel,
+    QFileDialog,
+    QProgressBar,
+    QMessageBox,
+    QTabWidget,
+    QListWidgetItem,
+    QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView,
+    QAbstractItemView,
+    QCompleter,
+    QMenu,
+    QCheckBox,
+    QDialog,
+    QComboBox,
+    QInputDialog,
 )
 from PyQt6.QtCore import Qt, QSettings, QTimer
 from PyQt6.QtGui import QColor
@@ -26,26 +46,30 @@ from utils import log, set_logging_enabled, format_size
 from translations import Translator
 from themes import get_current_theme
 
+
 class InternetArchiveGUI(QMainWindow):
     def __init__(self):
         super().__init__()
         self.item = None
         self.downloads = {}
         self.download_manager = None
-        self.settings = QSettings('InternetArchive', 'Downloader')
+        self._id_to_row: dict = {}  # O(1) unique_id → row lookups
+        self.settings = QSettings("InternetArchive", "Downloader")
 
         # Carrega configurações salvas
-        self.max_concurrent = self.settings.value('max_concurrent', 2, type=int)
-        self.segments_per_file = self.settings.value('segments_per_file', 4, type=int)
-        self.default_download_folder = self.settings.value('default_download_folder', '')
+        self.max_concurrent = self.settings.value("max_concurrent", 2, type=int)
+        self.segments_per_file = self.settings.value("segments_per_file", 4, type=int)
+        self.default_download_folder = self.settings.value(
+            "default_download_folder", ""
+        )
 
         # Carrega idioma salvo (padrão: pt-BR)
-        self.current_language = self.settings.value('language', 'pt-BR')
+        self.current_language = self.settings.value("language", "pt-BR")
         self.translator = Translator(self.current_language)
         self.t = self.translator.get  # Shorthand for translations
 
         # Carrega configuração de logging e aplica globalmente
-        enable_logging = self.settings.value('enable_logging', True, type=bool)
+        enable_logging = self.settings.value("enable_logging", True, type=bool)
         self.set_logging_enabled(enable_logging)
 
         self.recent_identifiers = self.load_recent_identifiers()
@@ -53,7 +77,7 @@ class InternetArchiveGUI(QMainWindow):
         self.all_files = []
 
         # Carrega último identifier usado
-        self.last_identifier = self.settings.value('last_identifier', '')
+        self.last_identifier = self.settings.value("last_identifier", "")
 
         # Controle de paginação para busca
         self.search_results_cache = []
@@ -68,7 +92,7 @@ class InternetArchiveGUI(QMainWindow):
         self.load_downloads()
 
         # Restaura a aba selecionada (após initUI)
-        last_tab = self.settings.value('last_tab_index', 0, type=int)
+        last_tab = self.settings.value("last_tab_index", 0, type=int)
         self.tabs_widget.setCurrentIndex(last_tab)
 
         # Conecta o sinal APÓS restaurar a aba (para não sobrescrever durante a inicialização)
@@ -76,23 +100,27 @@ class InternetArchiveGUI(QMainWindow):
 
         # Auto-busca o último identifier se houver (adiado para após a janela aparecer)
         if self.last_identifier:
-            log(f"[STARTUP] Auto-buscando último identifier (adiado): {self.last_identifier}")
+            log(
+                f"[STARTUP] Auto-buscando último identifier (adiado): {self.last_identifier}"
+            )
             QTimer.singleShot(0, self.search_files)
-        
+
     def load_recent_identifiers(self):
-        recent = self.settings.value('recent_identifiers', [])
+        recent = self.settings.value("recent_identifiers", [])
         if isinstance(recent, str):
             try:
                 recent = json.loads(recent)
             except:
                 recent = []
         return recent if recent else []
-    
+
     def save_recent_identifiers(self):
-        self.settings.setValue('recent_identifiers', json.dumps(self.recent_identifiers))
+        self.settings.setValue(
+            "recent_identifiers", json.dumps(self.recent_identifiers)
+        )
 
     def load_recent_searches(self):
-        recent = self.settings.value('recent_searches', [])
+        recent = self.settings.value("recent_searches", [])
         if isinstance(recent, str):
             try:
                 recent = json.loads(recent)
@@ -101,7 +129,7 @@ class InternetArchiveGUI(QMainWindow):
         return recent if recent else []
 
     def save_recent_searches(self):
-        self.settings.setValue('recent_searches', json.dumps(self.recent_searches))
+        self.settings.setValue("recent_searches", json.dumps(self.recent_searches))
 
     def add_to_recent_searches(self, query):
         if query in self.recent_searches:
@@ -116,57 +144,71 @@ class InternetArchiveGUI(QMainWindow):
     def load_downloads(self):
         """Carrega downloads salvos de sessões anteriores"""
         # Tenta carregar do novo formato (downloads_json)
-        json_str = self.settings.value('downloads_json', '')
-        
+        json_str = self.settings.value("downloads_json", "")
+
         # Fallback para formato antigo se não encontrar o novo
         if not json_str:
-            json_str = self.settings.value('downloads', '')
-        
+            json_str = self.settings.value("downloads", "")
+
         downloads_data = []
         if json_str:
             try:
                 downloads_data = json.loads(json_str)
             except:
                 downloads_data = []
-        
+
         if not downloads_data:
             return
-        
+
         log(f"\n[LOAD] Carregando {len(downloads_data)} download(s) salvos...")
         log(f"[LOAD] JSON sample: {json_str[:200]}...")
-        
-        for data in downloads_data:
-            try:
-                download_item = DownloadItem.from_dict(data)
-                
-                log(f"\n[LOAD] Arquivo: {download_item.filename}")
-                log(f"[LOAD] Total bytes do dict: {download_item.total_bytes}")
-                # Usa o tamanho salvo em cache (evita chamada de rede bloqueante na inicialização)
-                
-                # Atualiza downloaded_bytes com o tamanho atual do arquivo
-                dest_path = os.path.join(download_item.dest_folder, download_item.filename)
-                if os.path.exists(dest_path):
-                    download_item.downloaded_bytes = os.path.getsize(dest_path)
-                    log(f"[LOAD] Arquivo encontrado no disco: {download_item.downloaded_bytes} bytes ({format_size(download_item.downloaded_bytes)})")
-                    if download_item.total_bytes > 0:
-                        download_item.progress = int((download_item.downloaded_bytes / download_item.total_bytes) * 100)
-                        log(f"[LOAD] Progresso calculado: {download_item.progress}%")
-                else:
-                    log(f"[LOAD] Arquivo não encontrado no disco: {dest_path}")
-                    download_item.downloaded_bytes = 0
-                    download_item.progress = 0
-                
-                log(f"[LOAD] Status: {download_item.status.value}")
-                log(f"[LOAD] Final: total={download_item.total_bytes}, downloaded={download_item.downloaded_bytes}, progress={download_item.progress}%")
-                
-                self.downloads[download_item.filename] = download_item
-                self.add_download_to_table(download_item)
-                
-            except Exception as e:
-                log(f"[LOAD] Erro ao carregar download: {e}")
-                import traceback
-                traceback.print_exc()
-    
+
+        self.download_table.setUpdatesEnabled(False)
+        try:
+            for data in downloads_data:
+                try:
+                    download_item = DownloadItem.from_dict(data)
+
+                    log(f"\n[LOAD] Arquivo: {download_item.filename}")
+                    log(f"[LOAD] Total bytes do dict: {download_item.total_bytes}")
+                    # Usa o tamanho salvo em cache (evita chamada de rede bloqueante na inicialização)
+
+                    # Atualiza downloaded_bytes com o tamanho atual do arquivo
+                    dest_path = os.path.join(
+                        download_item.dest_folder, download_item.filename
+                    )
+                    if os.path.exists(dest_path):
+                        download_item.downloaded_bytes = os.path.getsize(dest_path)
+                        log(
+                            f"[LOAD] Arquivo encontrado no disco: {download_item.downloaded_bytes} bytes ({format_size(download_item.downloaded_bytes)})"
+                        )
+                        if download_item.total_bytes > 0:
+                            download_item.progress = int(
+                                (download_item.downloaded_bytes / download_item.total_bytes)
+                                * 100
+                            )
+                            log(f"[LOAD] Progresso calculado: {download_item.progress}%")
+                    else:
+                        log(f"[LOAD] Arquivo não encontrado no disco: {dest_path}")
+                        download_item.downloaded_bytes = 0
+                        download_item.progress = 0
+
+                    log(f"[LOAD] Status: {download_item.status.value}")
+                    log(
+                        f"[LOAD] Final: total={download_item.total_bytes}, downloaded={download_item.downloaded_bytes}, progress={download_item.progress}%"
+                    )
+
+                    self.downloads[download_item.unique_id] = download_item
+                    self.add_download_to_table(download_item)
+
+                except Exception as e:
+                    log(f"[LOAD] Erro ao carregar download: {e}")
+                    import traceback
+
+                    traceback.print_exc()
+        finally:
+            self.download_table.setUpdatesEnabled(True)
+
     def save_downloads(self):
         """Salva downloads atuais com todos os metadados"""
         downloads_data = []
@@ -180,12 +222,19 @@ class InternetArchiveGUI(QMainWindow):
             if os.path.exists(dest_path):
                 download_item.downloaded_bytes = os.path.getsize(dest_path)
                 if download_item.total_bytes > 0:
-                    download_item.progress = int((download_item.downloaded_bytes / download_item.total_bytes) * 100)
+                    download_item.progress = int(
+                        (download_item.downloaded_bytes / download_item.total_bytes)
+                        * 100
+                    )
 
             log(f"[SAVE] {download_item.filename}:")
             log(f"       status={download_item.status.value}")
-            log(f"       total_bytes={download_item.total_bytes} ({format_size(download_item.total_bytes)})")
-            log(f"       downloaded_bytes={download_item.downloaded_bytes} ({format_size(download_item.downloaded_bytes)})")
+            log(
+                f"       total_bytes={download_item.total_bytes} ({format_size(download_item.total_bytes)})"
+            )
+            log(
+                f"       downloaded_bytes={download_item.downloaded_bytes} ({format_size(download_item.downloaded_bytes)})"
+            )
             log(f"       progress={download_item.progress}%")
             log(f"       unique_id={download_item.unique_id}")
             log(f"       date_added={download_item.date_added}")
@@ -199,28 +248,28 @@ class InternetArchiveGUI(QMainWindow):
         log(f"[SAVE] JSON sample: {json_str[:200]}...")
 
         # Salva como texto puro para evitar conversão automática do QSettings
-        self.settings.setValue('downloads_json', json_str)
+        self.settings.setValue("downloads_json", json_str)
         log(f"[SAVE] {len(downloads_data)} download(s) salvos\n")
-    
+
     def add_to_recent(self, identifier):
         if identifier in self.recent_identifiers:
             self.recent_identifiers.remove(identifier)
-        
+
         self.recent_identifiers.insert(0, identifier)
         self.recent_identifiers = self.recent_identifiers[:20]
-        
+
         self.save_recent_identifiers()
         self.update_completer()
-        
+
     def initUI(self):
-        self.setWindowTitle(self.t('window_title'))
+        self.setWindowTitle(self.t("window_title"))
         self.setGeometry(100, 100, 1100, 750)
 
         # Aplica stylesheet moderno
         self.setStyleSheet(get_current_theme())
 
         # Adiciona barra de status
-        self.statusBar().showMessage(self.t('status_ready'))
+        self.statusBar().showMessage(self.t("status_ready"))
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -232,20 +281,20 @@ class InternetArchiveGUI(QMainWindow):
         layout.addWidget(self.tabs_widget)
 
         tab1 = self.create_search_tab()
-        self.tabs_widget.addTab(tab1, self.t('tab_search'))
+        self.tabs_widget.addTab(tab1, self.t("tab_search"))
 
         tab2 = self.create_identifier_tab()
-        self.tabs_widget.addTab(tab2, self.t('tab_identifier'))
+        self.tabs_widget.addTab(tab2, self.t("tab_identifier"))
 
         tab3 = self.create_download_manager_tab()
-        self.tabs_widget.addTab(tab3, self.t('tab_downloads'))
+        self.tabs_widget.addTab(tab3, self.t("tab_downloads"))
 
         tab4 = self.create_settings_tab()
-        self.tabs_widget.addTab(tab4, self.t('tab_settings'))
+        self.tabs_widget.addTab(tab4, self.t("tab_settings"))
 
     def on_tab_changed(self, index):
         """Salva a aba selecionada quando o usuário muda de aba"""
-        self.settings.setValue('last_tab_index', index)
+        self.settings.setValue("last_tab_index", index)
         log(f"[CONFIG] Aba alterada para índice: {index}")
 
     def create_search_tab(self):
@@ -256,16 +305,16 @@ class InternetArchiveGUI(QMainWindow):
         layout.setSpacing(16)
 
         # Título
-        title = QLabel(self.t('search_title'))
-        title.setProperty('class', 'section-header')
+        title = QLabel(self.t("search_title"))
+        title.setProperty("class", "section-header")
         layout.addWidget(title)
 
         # Campo de busca
         search_layout = QHBoxLayout()
         search_layout.setSpacing(12)
-        search_label = QLabel(self.t('search_label'))
+        search_label = QLabel(self.t("search_label"))
         self.search_query_input = QLineEdit()
-        self.search_query_input.setPlaceholderText(self.t('search_placeholder'))
+        self.search_query_input.setPlaceholderText(self.t("search_placeholder"))
         self.search_query_input.returnPressed.connect(self.search_archive)
 
         # Autocomplete para histórico de buscas
@@ -274,24 +323,26 @@ class InternetArchiveGUI(QMainWindow):
         self.search_query_input.setCompleter(self.search_completer)
 
         # Filtro de tipo de mídia
-        mediatype_label = QLabel(self.t('search_type_label'))
+        mediatype_label = QLabel(self.t("search_type_label"))
         self.mediatype_combo = QComboBox()
-        self.mediatype_combo.addItems([
-            self.t('media_all'),
-            self.t('media_audio'),
-            self.t('media_video'),
-            self.t('media_text'),
-            self.t('media_image'),
-            self.t('media_software'),
-            self.t('media_web'),
-            self.t('media_collection'),
-            self.t('media_data')
-        ])
+        self.mediatype_combo.addItems(
+            [
+                self.t("media_all"),
+                self.t("media_audio"),
+                self.t("media_video"),
+                self.t("media_text"),
+                self.t("media_image"),
+                self.t("media_software"),
+                self.t("media_web"),
+                self.t("media_collection"),
+                self.t("media_data"),
+            ]
+        )
 
-        self.search_archive_btn = QPushButton(self.t('search_button'))
+        self.search_archive_btn = QPushButton(self.t("search_button"))
         self.search_archive_btn.clicked.connect(self.search_archive)
 
-        self.search_history_btn = QPushButton(self.t('search_history_button'))
+        self.search_history_btn = QPushButton(self.t("search_history_button"))
         self.search_history_btn.setProperty("class", "secondary")
         self.search_history_btn.setStyle(self.search_history_btn.style())
         self.search_history_btn.clicked.connect(self.show_search_history)
@@ -305,28 +356,28 @@ class InternetArchiveGUI(QMainWindow):
         layout.addLayout(search_layout)
 
         # Dica de sintaxe
-        syntax_hint = QLabel(self.t('search_hint'))
-        syntax_hint.setProperty('class', 'note')
+        syntax_hint = QLabel(self.t("search_hint"))
+        syntax_hint.setProperty("class", "note")
         syntax_hint.setWordWrap(True)
         layout.addWidget(syntax_hint)
 
         # Label dos resultados
-        self.search_results_label = QLabel('')
+        self.search_results_label = QLabel("")
         layout.addWidget(self.search_results_label)
 
         # Controles de paginação
         pagination_layout = QHBoxLayout()
         pagination_layout.setSpacing(12)
-        self.prev_page_btn = QPushButton(self.t('search_previous'))
-        self.prev_page_btn.setProperty('class', 'secondary')
+        self.prev_page_btn = QPushButton(self.t("search_previous"))
+        self.prev_page_btn.setProperty("class", "secondary")
         self.prev_page_btn.clicked.connect(self.previous_page)
         self.prev_page_btn.setEnabled(False)
 
-        self.page_info_label = QLabel('')
+        self.page_info_label = QLabel("")
         self.page_info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        self.next_page_btn = QPushButton(self.t('search_next'))
-        self.next_page_btn.setProperty('class', 'secondary')
+        self.next_page_btn = QPushButton(self.t("search_next"))
+        self.next_page_btn.setProperty("class", "secondary")
         self.next_page_btn.clicked.connect(self.next_page)
         self.next_page_btn.setEnabled(False)
 
@@ -336,24 +387,42 @@ class InternetArchiveGUI(QMainWindow):
         layout.addLayout(pagination_layout)
 
         # Tabela de resultados
-        results_hint = QLabel(self.t('search_results_hint'))
-        results_hint.setProperty('class', 'note')
+        results_hint = QLabel(self.t("search_results_hint"))
+        results_hint.setProperty("class", "note")
         layout.addWidget(results_hint)
 
         self.search_results_table = QTableWidget()
         self.search_results_table.setColumnCount(6)
-        self.search_results_table.setHorizontalHeaderLabels([
-            self.t('col_title'), self.t('col_identifier'), self.t('col_type'),
-            self.t('col_downloads'), self.t('col_matching_files'), self.t('col_description')
-        ])
+        self.search_results_table.setHorizontalHeaderLabels(
+            [
+                self.t("col_title"),
+                self.t("col_identifier"),
+                self.t("col_type"),
+                self.t("col_downloads"),
+                self.t("col_matching_files"),
+                self.t("col_description"),
+            ]
+        )
 
         # Configuração das colunas
-        self.search_results_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)  # Título
-        self.search_results_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)  # Identifier
-        self.search_results_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)  # Tipo
-        self.search_results_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)  # Downloads
-        self.search_results_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)  # Matching Files
-        self.search_results_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)  # Descrição
+        self.search_results_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.Interactive
+        )  # Título
+        self.search_results_table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.Interactive
+        )  # Identifier
+        self.search_results_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.ResizeToContents
+        )  # Tipo
+        self.search_results_table.horizontalHeader().setSectionResizeMode(
+            3, QHeaderView.ResizeMode.ResizeToContents
+        )  # Downloads
+        self.search_results_table.horizontalHeader().setSectionResizeMode(
+            4, QHeaderView.ResizeMode.ResizeToContents
+        )  # Matching Files
+        self.search_results_table.horizontalHeader().setSectionResizeMode(
+            5, QHeaderView.ResizeMode.Stretch
+        )  # Descrição
 
         # Larguras iniciais
         self.search_results_table.setColumnWidth(0, 250)  # Título
@@ -362,18 +431,34 @@ class InternetArchiveGUI(QMainWindow):
         # Altura das linhas
         self.search_results_table.verticalHeader().setDefaultSectionSize(40)
 
-        self.search_results_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.search_results_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.search_results_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.search_results_table.setSortingEnabled(False)  # Desabilita ordenação nativa (vamos usar nossa própria)
+        self.search_results_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.search_results_table.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection
+        )
+        self.search_results_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
+        )
+        self.search_results_table.setSortingEnabled(
+            False
+        )  # Desabilita ordenação nativa (vamos usar nossa própria)
 
         # Conecta clique no header para ordenação customizada
-        self.search_results_table.horizontalHeader().sectionClicked.connect(self.sort_search_results)
-        self.search_results_table.itemDoubleClicked.connect(self.load_item_from_search_table)
+        self.search_results_table.horizontalHeader().sectionClicked.connect(
+            self.sort_search_results
+        )
+        self.search_results_table.itemDoubleClicked.connect(
+            self.load_item_from_search_table
+        )
 
         # Context menu para resultados de busca
-        self.search_results_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.search_results_table.customContextMenuRequested.connect(self.show_search_results_context_menu)
+        self.search_results_table.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu
+        )
+        self.search_results_table.customContextMenuRequested.connect(
+            self.show_search_results_context_menu
+        )
 
         layout.addWidget(self.search_results_table)
 
@@ -384,31 +469,31 @@ class InternetArchiveGUI(QMainWindow):
         query = self.search_query_input.text().strip()
 
         if not query:
-            QMessageBox.warning(self, self.t('warning'), self.t('warn_search_empty'))
+            QMessageBox.warning(self, self.t("warning"), self.t("warn_search_empty"))
             return
 
         # Pega o tipo de mídia selecionado
         mediatype_text = self.mediatype_combo.currentText()
         mediatype_map = {
-            self.t('media_all'): '',
-            self.t('media_audio'): 'audio',
-            self.t('media_video'): 'movies',
-            self.t('media_text'): 'texts',
-            self.t('media_image'): 'image',
-            self.t('media_software'): 'software',
-            self.t('media_web'): 'web',
-            self.t('media_collection'): 'collection',
-            self.t('media_data'): 'data'
+            self.t("media_all"): "",
+            self.t("media_audio"): "audio",
+            self.t("media_video"): "movies",
+            self.t("media_text"): "texts",
+            self.t("media_image"): "image",
+            self.t("media_software"): "software",
+            self.t("media_web"): "web",
+            self.t("media_collection"): "collection",
+            self.t("media_data"): "data",
         }
-        mediatype = mediatype_map.get(mediatype_text, '')
+        mediatype = mediatype_map.get(mediatype_text, "")
 
         # Monta a query
         if mediatype:
-            full_query = f'{query} AND mediatype:{mediatype}'
+            full_query = f"{query} AND mediatype:{mediatype}"
         else:
             full_query = query
 
-        self.search_results_label.setText(self.t('searching_for', query=query))
+        self.search_results_label.setText(self.t("searching_for", query=query))
         self.search_results_table.setRowCount(0)
         self.search_archive_btn.setEnabled(False)
         self.prev_page_btn.setEnabled(False)
@@ -420,8 +505,8 @@ class InternetArchiveGUI(QMainWindow):
             # Busca até 500 resultados (10 páginas)
             results = ia.search_items(
                 full_query,
-                fields=['identifier', 'title', 'description', 'downloads', 'mediatype'],
-                sorts=['downloads desc']
+                fields=["identifier", "title", "description", "downloads", "mediatype"],
+                sorts=["downloads desc"],
             )
 
             self.search_results_cache = []
@@ -431,28 +516,30 @@ class InternetArchiveGUI(QMainWindow):
                 if count >= 500:
                     break
 
-                identifier = result.get('identifier', 'N/A')
-                title = result.get('title', self.t('no_title'))
-                description = result.get('description', self.t('no_description'))
-                downloads = result.get('downloads', 0)
-                mediatype_result = result.get('mediatype', 'N/A')
+                identifier = result.get("identifier", "N/A")
+                title = result.get("title", self.t("no_title"))
+                description = result.get("description", self.t("no_description"))
+                downloads = result.get("downloads", 0)
+                mediatype_result = result.get("mediatype", "N/A")
 
                 # Limita tamanho da descrição
                 if isinstance(description, list):
-                    description = ' '.join(description)
+                    description = " ".join(description)
                 if len(description) > 150:
-                    description = description[:150] + '...'
+                    description = description[:150] + "..."
 
                 # Armazena no cache
-                self.search_results_cache.append({
-                    'identifier': identifier,
-                    'title': title,
-                    'description': description,
-                    'downloads': downloads,
-                    'mediatype': mediatype_result,
-                    'matching_files': None,  # Será carregado sob demanda
-                    'matching_files_list': None  # Lista completa de arquivos correspondentes
-                })
+                self.search_results_cache.append(
+                    {
+                        "identifier": identifier,
+                        "title": title,
+                        "description": description,
+                        "downloads": downloads,
+                        "mediatype": mediatype_result,
+                        "matching_files": None,  # Será carregado sob demanda
+                        "matching_files_list": None,  # Lista completa de arquivos correspondentes
+                    }
+                )
 
                 count += 1
 
@@ -461,10 +548,13 @@ class InternetArchiveGUI(QMainWindow):
                 self.current_search_query = query
 
             if count == 0:
-                self.search_results_label.setText(self.t('no_results'))
-                self.page_info_label.setText('')
-                QMessageBox.information(self, self.t('no_results_title'),
-                                      self.t('no_results_found', query=query))
+                self.search_results_label.setText(self.t("no_results"))
+                self.page_info_label.setText("")
+                QMessageBox.information(
+                    self,
+                    self.t("no_results_title"),
+                    self.t("no_results_found", query=query),
+                )
             else:
                 # Adiciona ao histórico de buscas
                 self.add_to_recent_searches(query)
@@ -478,9 +568,11 @@ class InternetArchiveGUI(QMainWindow):
 
         except Exception as e:
             log(f"[SEARCH] Erro: {e}")
-            QMessageBox.critical(self, self.t('error'), self.t('error_search', error=str(e)))
-            self.search_results_label.setText(self.t('search_error'))
-            self.page_info_label.setText('')
+            QMessageBox.critical(
+                self, self.t("error"), self.t("error_search", error=str(e))
+            )
+            self.search_results_label.setText(self.t("search_error"))
+            self.page_info_label.setText("")
 
         finally:
             self.search_archive_btn.setEnabled(True)
@@ -492,19 +584,23 @@ class InternetArchiveGUI(QMainWindow):
 
         # Se clicar na mesma coluna, inverte a ordem
         if self.current_sort_column == column:
-            self.current_sort_order = Qt.SortOrder.DescendingOrder if self.current_sort_order == Qt.SortOrder.AscendingOrder else Qt.SortOrder.AscendingOrder
+            self.current_sort_order = (
+                Qt.SortOrder.DescendingOrder
+                if self.current_sort_order == Qt.SortOrder.AscendingOrder
+                else Qt.SortOrder.AscendingOrder
+            )
         else:
             self.current_sort_column = column
             self.current_sort_order = Qt.SortOrder.AscendingOrder
 
         # Mapeia coluna para chave no dicionário
         column_keys = {
-            0: 'title',
-            1: 'identifier',
-            2: 'mediatype',
-            3: 'downloads',
-            4: 'matching_files',
-            5: 'description'
+            0: "title",
+            1: "identifier",
+            2: "mediatype",
+            3: "downloads",
+            4: "matching_files",
+            5: "description",
         }
 
         sort_key = column_keys.get(column)
@@ -512,14 +608,18 @@ class InternetArchiveGUI(QMainWindow):
             return
 
         # Ordena o cache completo
-        reverse = (self.current_sort_order == Qt.SortOrder.DescendingOrder)
+        reverse = self.current_sort_order == Qt.SortOrder.DescendingOrder
 
-        if sort_key in ['downloads', 'matching_files']:
+        if sort_key in ["downloads", "matching_files"]:
             # Para downloads e matching_files, ordena numericamente
-            self.search_results_cache.sort(key=lambda x: x.get(sort_key, 0) or 0, reverse=reverse)
+            self.search_results_cache.sort(
+                key=lambda x: x.get(sort_key, 0) or 0, reverse=reverse
+            )
         else:
             # Para texto, ordena alfabeticamente (case insensitive)
-            self.search_results_cache.sort(key=lambda x: str(x[sort_key]).lower(), reverse=reverse)
+            self.search_results_cache.sort(
+                key=lambda x: str(x[sort_key]).lower(), reverse=reverse
+            )
 
         log(f"[SORT] Ordenando por {sort_key} ({'DESC' if reverse else 'ASC'})")
 
@@ -546,7 +646,7 @@ class InternetArchiveGUI(QMainWindow):
         from PyQt6.QtWidgets import QDialog
 
         dialog = QDialog(self)
-        dialog.setWindowTitle(self.t('matching_files_title'))
+        dialog.setWindowTitle(self.t("matching_files_title"))
         dialog.setGeometry(150, 150, 900, 600)
 
         layout = QVBoxLayout(dialog)
@@ -559,29 +659,45 @@ class InternetArchiveGUI(QMainWindow):
         layout.addWidget(header_label)
 
         if not matching_files or len(matching_files) == 0:
-            no_files_label = QLabel(self.t('no_matching_files'))
+            no_files_label = QLabel(self.t("no_matching_files"))
             no_files_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             layout.addWidget(no_files_label)
         else:
             # Instrução
-            instruction_label = QLabel(self.t('matching_files_instruction', count=len(matching_files)))
-            instruction_label.setProperty('class', 'note')
+            instruction_label = QLabel(
+                self.t("matching_files_instruction", count=len(matching_files))
+            )
+            instruction_label.setProperty("class", "note")
             layout.addWidget(instruction_label)
 
             # Tabela de arquivos
             files_table = QTableWidget()
             files_table.setColumnCount(4)
-            files_table.setHorizontalHeaderLabels([
-                self.t('col_filename'), self.t('col_size'),
-                self.t('col_format'), self.t('col_action')
-            ])
+            files_table.setHorizontalHeaderLabels(
+                [
+                    self.t("col_filename"),
+                    self.t("col_size"),
+                    self.t("col_format"),
+                    self.t("col_action"),
+                ]
+            )
 
-            files_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-            files_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-            files_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-            files_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+            files_table.horizontalHeader().setSectionResizeMode(
+                0, QHeaderView.ResizeMode.Stretch
+            )
+            files_table.horizontalHeader().setSectionResizeMode(
+                1, QHeaderView.ResizeMode.ResizeToContents
+            )
+            files_table.horizontalHeader().setSectionResizeMode(
+                2, QHeaderView.ResizeMode.ResizeToContents
+            )
+            files_table.horizontalHeader().setSectionResizeMode(
+                3, QHeaderView.ResizeMode.ResizeToContents
+            )
 
-            files_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+            files_table.setSelectionBehavior(
+                QAbstractItemView.SelectionBehavior.SelectRows
+            )
             files_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
 
             for file_info in matching_files:
@@ -589,23 +705,25 @@ class InternetArchiveGUI(QMainWindow):
                 files_table.insertRow(row)
 
                 # Nome do arquivo
-                name_item = QTableWidgetItem(file_info['name'])
+                name_item = QTableWidgetItem(file_info["name"])
                 files_table.setItem(row, 0, name_item)
 
                 # Tamanho
-                size_item = QTableWidgetItem(format_size(file_info['size']))
+                size_item = QTableWidgetItem(format_size(file_info["size"]))
                 files_table.setItem(row, 1, size_item)
 
                 # Formato
-                format_item = QTableWidgetItem(file_info['format'])
+                format_item = QTableWidgetItem(file_info["format"])
                 files_table.setItem(row, 2, format_item)
 
                 # Botão de ação (adicionar à fila)
-                add_btn = QPushButton(self.t('add_to_queue'))
-                add_btn.setProperty('class', 'success')
+                add_btn = QPushButton(self.t("add_to_queue"))
+                add_btn.setProperty("class", "success")
                 add_btn.clicked.connect(
-                    lambda _checked, id=identifier, fn=file_info['name'], sz=file_info['size']:
-                    self.add_file_to_queue_from_dialog(id, fn, sz)
+                    lambda _checked,
+                    id=identifier,
+                    fn=file_info["name"],
+                    sz=file_info["size"]: self.add_file_to_queue_from_dialog(id, fn, sz)
                 )
                 files_table.setCellWidget(row, 3, add_btn)
 
@@ -615,12 +733,14 @@ class InternetArchiveGUI(QMainWindow):
         button_layout = QHBoxLayout()
         button_layout.setSpacing(12)
 
-        view_all_btn = QPushButton(self.t('view_all_files'))
-        view_all_btn.clicked.connect(lambda: self.view_all_files_from_dialog(identifier, dialog))
+        view_all_btn = QPushButton(self.t("view_all_files"))
+        view_all_btn.clicked.connect(
+            lambda: self.view_all_files_from_dialog(identifier, dialog)
+        )
         button_layout.addWidget(view_all_btn)
 
-        close_btn = QPushButton(self.t('close'))
-        close_btn.setProperty('class', 'secondary')
+        close_btn = QPushButton(self.t("close"))
+        close_btn.setProperty("class", "secondary")
         close_btn.clicked.connect(dialog.close)
         button_layout.addWidget(close_btn)
 
@@ -628,26 +748,55 @@ class InternetArchiveGUI(QMainWindow):
 
         dialog.exec()
 
+    def _is_duplicate(self, new_item):
+        """Returns True if an equivalent download already exists in the queue."""
+        for existing in self.downloads.values():
+            # URL-based: same URL = same file regardless of display name
+            if new_item.url and existing.url:
+                if new_item.url == existing.url:
+                    return True
+            # Identifier-based: same Archive.org item + same filename = same file
+            elif not new_item.url and not existing.url:
+                if new_item.item_id == existing.item_id and new_item.filename == existing.filename:
+                    return True
+        return False
+
     def add_file_to_queue_from_dialog(self, identifier, filename, file_size):
         """Adiciona arquivo à fila de downloads a partir do dialog"""
         if not self.default_download_folder:
-            QMessageBox.warning(self, self.t('info_no_default_folder_title'),
-                              self.t('warn_no_default_folder'))
+            QMessageBox.warning(
+                self,
+                self.t("info_no_default_folder_title"),
+                self.t("warn_no_default_folder"),
+            )
             return
 
-        if filename in self.downloads:
-            QMessageBox.information(self, self.t('info_already_queued'),
-                                  self.t('warn_already_queued', filename=filename))
-            return
-
-        download_item = DownloadItem(identifier, filename, self.default_download_folder, segments=self.segments_per_file)
+        download_item = DownloadItem(
+            identifier,
+            filename,
+            self.default_download_folder,
+            segments=self.segments_per_file,
+        )
         download_item.total_bytes = file_size
-        self.downloads[filename] = download_item
+
+        if self._is_duplicate(download_item):
+            QMessageBox.information(
+                self,
+                self.t("info_already_queued"),
+                self.t("warn_already_queued", filename=filename),
+            )
+            return
+
+        self.downloads[download_item.unique_id] = download_item
         self.add_download_to_table(download_item)
         self.download_manager.add_download(download_item)
 
-        log(f"[DIALOG-ADD] Arquivo adicionado: {filename} -> {self.default_download_folder}")
-        self.statusBar().showMessage(self.t('info_added_to_queue', filename=filename), 3000)
+        log(
+            f"[DIALOG-ADD] Arquivo adicionado: {filename} -> {self.default_download_folder}"
+        )
+        self.statusBar().showMessage(
+            self.t("info_added_to_queue", filename=filename), 3000
+        )
 
     def view_all_files_from_dialog(self, identifier, dialog):
         """Fecha o dialog e abre a aba de identifier com todos os arquivos"""
@@ -669,7 +818,9 @@ class InternetArchiveGUI(QMainWindow):
         self.search_results_table.setRowCount(0)
 
         total_results = len(self.search_results_cache)
-        total_pages = (total_results + self.results_per_page - 1) // self.results_per_page
+        total_pages = (
+            total_results + self.results_per_page - 1
+        ) // self.results_per_page
 
         start_idx = self.current_search_page * self.results_per_page
         end_idx = min(start_idx + self.results_per_page, total_results)
@@ -681,44 +832,56 @@ class InternetArchiveGUI(QMainWindow):
             self.search_results_table.insertRow(row)
 
             # Título
-            title_item = QTableWidgetItem(result['title'])
-            title_item.setData(Qt.ItemDataRole.UserRole, result['identifier'])  # Armazena identifier
+            title_item = QTableWidgetItem(result["title"])
+            title_item.setData(
+                Qt.ItemDataRole.UserRole, result["identifier"]
+            )  # Armazena identifier
             self.search_results_table.setItem(row, 0, title_item)
 
             # Identifier
-            id_item = QTableWidgetItem(result['identifier'])
+            id_item = QTableWidgetItem(result["identifier"])
             self.search_results_table.setItem(row, 1, id_item)
 
             # Tipo
-            type_item = QTableWidgetItem(result['mediatype'])
+            type_item = QTableWidgetItem(result["mediatype"])
             self.search_results_table.setItem(row, 2, type_item)
 
             # Downloads (armazena valor numérico para ordenação correta)
             downloads_item = QTableWidgetItem(f"{result['downloads']:,}")
-            downloads_item.setData(Qt.ItemDataRole.UserRole, result['downloads'])
+            downloads_item.setData(Qt.ItemDataRole.UserRole, result["downloads"])
             self.search_results_table.setItem(row, 3, downloads_item)
 
             # Matching Files (mostrado apenas quando carregado via context menu)
-            files_display = '-'
-            if result['matching_files'] is not None:
-                files_display = str(result['matching_files']) if result['matching_files'] > 0 else '0'
+            files_display = "-"
+            if result["matching_files"] is not None:
+                files_display = (
+                    str(result["matching_files"])
+                    if result["matching_files"] > 0
+                    else "0"
+                )
 
             files_item = QTableWidgetItem(files_display)
-            files_item.setData(Qt.ItemDataRole.UserRole, result.get('matching_files', 0))
+            files_item.setData(
+                Qt.ItemDataRole.UserRole, result.get("matching_files", 0)
+            )
             self.search_results_table.setItem(row, 4, files_item)
 
             # Descrição
-            desc_item = QTableWidgetItem(result['description'])
+            desc_item = QTableWidgetItem(result["description"])
             self.search_results_table.setItem(row, 5, desc_item)
 
         # Atualiza label de informação
-        self.search_results_label.setText(self.t('results_found', count=total_results))
-        self.page_info_label.setText(self.t('page_info',
-                                            current=self.current_search_page + 1,
-                                            total=total_pages,
-                                            start=start_idx + 1,
-                                            end=end_idx,
-                                            count=total_results))
+        self.search_results_label.setText(self.t("results_found", count=total_results))
+        self.page_info_label.setText(
+            self.t(
+                "page_info",
+                current=self.current_search_page + 1,
+                total=total_pages,
+                start=start_idx + 1,
+                end=end_idx,
+                count=total_results,
+            )
+        )
 
         # Habilita/desabilita botões de navegação
         self.prev_page_btn.setEnabled(self.current_search_page > 0)
@@ -733,7 +896,9 @@ class InternetArchiveGUI(QMainWindow):
 
     def next_page(self):
         """Vai para a próxima página"""
-        total_pages = (len(self.search_results_cache) + self.results_per_page - 1) // self.results_per_page
+        total_pages = (
+            len(self.search_results_cache) + self.results_per_page - 1
+        ) // self.results_per_page
         if self.current_search_page < total_pages - 1:
             self.current_search_page += 1
             self.update_search_page_display()
@@ -777,7 +942,7 @@ class InternetArchiveGUI(QMainWindow):
         # Encontra o resultado no cache
         result = None
         for r in self.search_results_cache:
-            if r['identifier'] == identifier:
+            if r["identifier"] == identifier:
                 result = r
                 break
 
@@ -788,24 +953,30 @@ class InternetArchiveGUI(QMainWindow):
         context_menu = QMenu(self)
 
         # Ação de mostrar arquivos correspondentes
-        show_files_action = context_menu.addAction(self.t('context_show_matching_files'))
-        show_files_action.triggered.connect(lambda: self.load_matching_files_async(result))
+        show_files_action = context_menu.addAction(
+            self.t("context_show_matching_files")
+        )
+        show_files_action.triggered.connect(
+            lambda: self.load_matching_files_async(result)
+        )
 
         # Mostra o menu na posição do cursor
         context_menu.exec(self.search_results_table.viewport().mapToGlobal(position))
 
     def load_matching_files_async(self, result):
         """Carrega arquivos correspondentes em background thread"""
-        identifier = result['identifier']
-        title = result['title']
+        identifier = result["identifier"]
+        title = result["title"]
 
         # Se já carregou, mostra direto
-        if result['matching_files_list'] is not None:
-            self.show_matching_files_dialog(identifier, title, result['matching_files_list'])
+        if result["matching_files_list"] is not None:
+            self.show_matching_files_dialog(
+                identifier, title, result["matching_files_list"]
+            )
             return
 
         # Mostra mensagem de carregamento
-        QMessageBox.information(self, self.t('info'), self.t('loading_matching_files'))
+        QMessageBox.information(self, self.t("info"), self.t("loading_matching_files"))
 
         # Cria thread para carregar arquivos
         from PyQt6.QtCore import QThread, pyqtSignal
@@ -826,15 +997,17 @@ class InternetArchiveGUI(QMainWindow):
 
                     matching_files = []
                     for file in item.files:
-                        filename = file.get('name', '').lower()
+                        filename = file.get("name", "").lower()
 
                         # Verifica se algum termo de busca está no nome do arquivo
                         if any(term in filename for term in query_terms):
-                            matching_files.append({
-                                'name': file.get('name', ''),
-                                'size': int(file.get('size', 0)),
-                                'format': file.get('format', 'N/A')
-                            })
+                            matching_files.append(
+                                {
+                                    "name": file.get("name", ""),
+                                    "size": int(file.get("size", 0)),
+                                    "format": file.get("format", "N/A"),
+                                }
+                            )
 
                     self.finished.emit(len(matching_files), matching_files)
 
@@ -845,8 +1018,8 @@ class InternetArchiveGUI(QMainWindow):
         thread = MatchingFilesThread(identifier, self.current_search_query)
 
         def on_finished(count, files):
-            result['matching_files'] = count
-            result['matching_files_list'] = files
+            result["matching_files"] = count
+            result["matching_files_list"] = files
 
             # Atualiza a tabela
             self.update_search_page_display()
@@ -855,8 +1028,9 @@ class InternetArchiveGUI(QMainWindow):
             self.show_matching_files_dialog(identifier, title, files)
 
         def on_error(error_msg):
-            QMessageBox.critical(self, self.t('error'),
-                               self.t('error_loading_files', error=error_msg))
+            QMessageBox.critical(
+                self, self.t("error"), self.t("error_loading_files", error=error_msg)
+            )
 
         thread.finished.connect(on_finished)
         thread.error.connect(on_error)
@@ -873,21 +1047,21 @@ class InternetArchiveGUI(QMainWindow):
 
         id_layout = QHBoxLayout()
         id_layout.setSpacing(12)
-        id_label = QLabel(self.t('identifier_label'))
+        id_label = QLabel(self.t("identifier_label"))
         self.id_input = QLineEdit()
-        self.id_input.setPlaceholderText(self.t('identifier_placeholder'))
+        self.id_input.setPlaceholderText(self.t("identifier_placeholder"))
         self.id_input.returnPressed.connect(self.search_files)
 
         self.completer = QCompleter(self.recent_identifiers)
         self.completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self.id_input.setCompleter(self.completer)
 
-        self.search_btn = QPushButton(self.t('search_files_button'))
+        self.search_btn = QPushButton(self.t("search_files_button"))
         self.search_btn.clicked.connect(self.search_files)
 
-        self.history_btn = QPushButton(self.t('history_button'))
-        self.history_btn.setProperty('class', 'secondary')
-        self.history_btn.setToolTip(self.t('history_tooltip'))
+        self.history_btn = QPushButton(self.t("history_button"))
+        self.history_btn.setProperty("class", "secondary")
+        self.history_btn.setToolTip(self.t("history_tooltip"))
         self.history_btn.clicked.connect(self.show_history)
 
         id_layout.addWidget(id_label)
@@ -902,14 +1076,14 @@ class InternetArchiveGUI(QMainWindow):
 
         filter_layout = QHBoxLayout()
         filter_layout.setSpacing(12)
-        filter_label = QLabel(self.t('filter_label'))
+        filter_label = QLabel(self.t("filter_label"))
         self.filter_input = QLineEdit()
-        self.filter_input.setPlaceholderText(self.t('filter_placeholder'))
+        self.filter_input.setPlaceholderText(self.t("filter_placeholder"))
         self.filter_input.textChanged.connect(self.filter_files)
-        self.clear_filter_btn = QPushButton('✕')
-        self.clear_filter_btn.setProperty('class', 'secondary')
+        self.clear_filter_btn = QPushButton("✕")
+        self.clear_filter_btn.setProperty("class", "secondary")
         self.clear_filter_btn.setMaximumWidth(35)
-        self.clear_filter_btn.setToolTip(self.t('clear_filter_tooltip'))
+        self.clear_filter_btn.setToolTip(self.t("clear_filter_tooltip"))
         self.clear_filter_btn.clicked.connect(lambda: self.filter_input.clear())
 
         filter_layout.addWidget(filter_label)
@@ -917,27 +1091,31 @@ class InternetArchiveGUI(QMainWindow):
         filter_layout.addWidget(self.clear_filter_btn)
         layout.addLayout(filter_layout)
 
-        list_label = QLabel(self.t('files_label'))
+        list_label = QLabel(self.t("files_label"))
         layout.addWidget(list_label)
 
-        hint_label = QLabel(self.t('double_click_hint'))
-        hint_label.setProperty('class', 'note')
+        hint_label = QLabel(self.t("double_click_hint"))
+        hint_label.setProperty("class", "note")
         layout.addWidget(hint_label)
 
         self.file_list = QListWidget()
-        self.file_list.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
+        self.file_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         self.file_list.itemDoubleClicked.connect(self.add_file_on_double_click)
+        self.file_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.file_list.customContextMenuRequested.connect(
+            self.show_file_list_context_menu
+        )
         layout.addWidget(self.file_list)
 
         download_layout = QHBoxLayout()
-        self.download_btn = QPushButton(self.t('add_to_queue_button'))
+        self.download_btn = QPushButton(self.t("add_to_queue_button"))
         self.download_btn.clicked.connect(self.add_to_queue)
         self.download_btn.setEnabled(False)
         download_layout.addStretch()
         download_layout.addWidget(self.download_btn)
         layout.addLayout(download_layout)
 
-        self.status_label = QLabel('')
+        self.status_label = QLabel("")
         layout.addWidget(self.status_label)
 
         return tab
@@ -952,23 +1130,23 @@ class InternetArchiveGUI(QMainWindow):
         toolbar_layout = QHBoxLayout()
         toolbar_layout.setSpacing(8)
 
-        self.pause_resume_btn = QPushButton("⏸ " + self.t('action_pause'))
-        self.pause_resume_btn.setProperty('class', 'secondary')
+        self.pause_resume_btn = QPushButton("⏸ " + self.t("action_pause"))
+        self.pause_resume_btn.setProperty("class", "secondary")
         self.pause_resume_btn.clicked.connect(self.toolbar_pause_resume)
         self.pause_resume_btn.setEnabled(False)
 
-        self.cancel_btn = QPushButton("✕ " + self.t('action_cancel'))
-        self.cancel_btn.setProperty('class', 'danger')
+        self.cancel_btn = QPushButton("✕ " + self.t("action_cancel"))
+        self.cancel_btn.setProperty("class", "danger")
         self.cancel_btn.clicked.connect(self.toolbar_cancel)
         self.cancel_btn.setEnabled(False)
 
-        self.restart_btn = QPushButton("↻ " + self.t('action_restart'))
-        self.restart_btn.setProperty('class', 'success')
+        self.restart_btn = QPushButton("↻ " + self.t("action_restart"))
+        self.restart_btn.setProperty("class", "success")
         self.restart_btn.clicked.connect(self.toolbar_restart)
         self.restart_btn.setEnabled(False)
 
-        self.remove_btn = QPushButton("🗑 " + self.t('action_remove'))
-        self.remove_btn.setProperty('class', 'secondary')
+        self.remove_btn = QPushButton("🗑 " + self.t("action_remove"))
+        self.remove_btn.setProperty("class", "secondary")
         self.remove_btn.clicked.connect(self.toolbar_remove)
         self.remove_btn.setEnabled(False)
 
@@ -978,14 +1156,14 @@ class InternetArchiveGUI(QMainWindow):
         toolbar_layout.addWidget(self.remove_btn)
         toolbar_layout.addStretch()
 
-        self.add_url_btn = QPushButton("🔗 " + self.t('add_url_button'))
+        self.add_url_btn = QPushButton("🔗 " + self.t("add_url_button"))
         self.add_url_btn.clicked.connect(self.show_add_url_dialog)
 
-        self.clear_completed_btn = QPushButton(self.t('dm_clear_completed'))
-        self.clear_completed_btn.setProperty('class', 'secondary')
+        self.clear_completed_btn = QPushButton(self.t("dm_clear_completed"))
+        self.clear_completed_btn.setProperty("class", "secondary")
         self.clear_completed_btn.clicked.connect(self.clear_completed)
 
-        self.cancel_all_btn = QPushButton(self.t('dm_cancel_all'))
+        self.cancel_all_btn = QPushButton(self.t("dm_cancel_all"))
         self.cancel_all_btn.setProperty("class", "danger")
         self.cancel_all_btn.clicked.connect(self.cancel_all)
 
@@ -998,29 +1176,62 @@ class InternetArchiveGUI(QMainWindow):
         # Download table
         self.download_table = QTableWidget()
         self.download_table.setColumnCount(7)
-        self.download_table.setHorizontalHeaderLabels([
-            self.t('dm_col_file'), self.t('dm_col_status'), self.t('dm_col_progress'),
-            self.t('dm_col_size'), self.t('dm_col_speed'), self.t('dm_col_connections'),
-            self.t('dm_col_message')
-        ])
+        self.download_table.setHorizontalHeaderLabels(
+            [
+                self.t("dm_col_file"),
+                self.t("dm_col_status"),
+                self.t("dm_col_progress"),
+                self.t("dm_col_size"),
+                self.t("dm_col_speed"),
+                self.t("dm_col_connections"),
+                self.t("dm_col_message"),
+            ]
+        )
         # Aumenta altura das linhas para melhor visibilidade
         self.download_table.verticalHeader().setDefaultSectionSize(35)
         # Esconde o header vertical (números de linha) que aparecia como caixas pretas
         self.download_table.verticalHeader().setVisible(False)
 
-        self.download_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.download_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self.download_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
-        self.download_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        self.download_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        self.download_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)  # Conexões
-        self.download_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)  # Mensagem
+        self.download_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.Stretch
+        )
+        # Fixed widths on columns whose content changes every progress tick —
+        # ResizeToContents re-measures ALL cells in the column on every change,
+        # causing constant header repaints that tank performance at scale.
+        self.download_table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.Fixed
+        )  # Status
+        self.download_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.Fixed
+        )  # Progress bar
+        self.download_table.horizontalHeader().setSectionResizeMode(
+            3, QHeaderView.ResizeMode.Fixed
+        )  # Size
+        self.download_table.horizontalHeader().setSectionResizeMode(
+            4, QHeaderView.ResizeMode.Fixed
+        )  # Speed
+        self.download_table.horizontalHeader().setSectionResizeMode(
+            5, QHeaderView.ResizeMode.Fixed
+        )  # Conexões
+        self.download_table.horizontalHeader().setSectionResizeMode(
+            6, QHeaderView.ResizeMode.Stretch
+        )  # Mensagem
+        self.download_table.setColumnWidth(1, 110)
         self.download_table.setColumnWidth(2, 200)
-        self.download_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.download_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.download_table.setColumnWidth(3, 190)
+        self.download_table.setColumnWidth(4, 95)
+        self.download_table.setColumnWidth(5, 50)
+        self.download_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.download_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
+        )
         self.download_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.download_table.customContextMenuRequested.connect(self.show_context_menu)
-        self.download_table.cellDoubleClicked.connect(self.on_download_table_double_click)
+        self.download_table.cellDoubleClicked.connect(
+            self.on_download_table_double_click
+        )
         self.download_table.itemSelectionChanged.connect(self.update_toolbar_buttons)
 
         layout.addWidget(self.download_table)
@@ -1028,94 +1239,126 @@ class InternetArchiveGUI(QMainWindow):
         return tab
 
     def update_toolbar_buttons(self):
-        """Atualiza estado dos botões da toolbar baseado na seleção"""
+        """Atualiza estado dos botões da toolbar baseado em todos os itens selecionados"""
         selected_rows = self.download_table.selectionModel().selectedRows()
-        has_selection = len(selected_rows) > 0
 
-        if not has_selection:
+        if not selected_rows:
             self.pause_resume_btn.setEnabled(False)
             self.cancel_btn.setEnabled(False)
             self.restart_btn.setEnabled(False)
             self.remove_btn.setEnabled(False)
             return
 
-        # Pega o primeiro item selecionado para determinar estado dos botões
-        row = selected_rows[0].row()
-        filename = self.download_table.item(row, 0).text()
+        # Agrega os status de todos os itens selecionados
+        any_pauseable = False   # DOWNLOADING ou WAITING
+        any_resumable = False   # PAUSED
+        any_cancelable = False
+        any_restartable = False
 
-        if filename in self.downloads:
-            download_item = self.downloads[filename]
-            status = download_item.status
+        for index in selected_rows:
+            uid = self.download_table.item(index.row(), 0).data(Qt.ItemDataRole.UserRole)
+            if not uid or uid not in self.downloads:
+                continue
+            status = self.downloads[uid].status
 
-            # Botão Pause/Resume
-            if status in [DownloadStatus.DOWNLOADING, DownloadStatus.PAUSED, DownloadStatus.WAITING]:
-                self.pause_resume_btn.setEnabled(True)
-                if status == DownloadStatus.PAUSED:
-                    self.pause_resume_btn.setText("▶ " + self.t('action_resume'))
-                else:
-                    self.pause_resume_btn.setText("⏸ " + self.t('action_pause'))
+            if status in (DownloadStatus.DOWNLOADING, DownloadStatus.WAITING):
+                any_pauseable = True
+            if status == DownloadStatus.PAUSED:
+                any_resumable = True
+            if status not in (DownloadStatus.CANCELLED, DownloadStatus.COMPLETED):
+                any_cancelable = True
+            if status == DownloadStatus.CANCELLED:
+                any_restartable = True
+
+        # Botão Pause/Resume — habilitado se qualquer item puder ser pausado ou retomado
+        can_pause_resume = any_pauseable or any_resumable
+        self.pause_resume_btn.setEnabled(can_pause_resume)
+        if can_pause_resume:
+            if any_pauseable and any_resumable:
+                # Seleção mista: alguns pausados, outros rodando
+                self.pause_resume_btn.setText("⏸/▶ " + self.t("action_pause") + "/" + self.t("action_resume"))
+            elif any_pauseable:
+                self.pause_resume_btn.setText("⏸ " + self.t("action_pause"))
             else:
-                self.pause_resume_btn.setEnabled(False)
+                self.pause_resume_btn.setText("▶ " + self.t("action_resume"))
 
-            # Botão Cancel
-            self.cancel_btn.setEnabled(status not in [DownloadStatus.CANCELLED, DownloadStatus.COMPLETED])
-
-            # Botão Restart
-            self.restart_btn.setEnabled(status == DownloadStatus.CANCELLED)
-
-            # Botão Remove - sempre habilitado quando há seleção
-            self.remove_btn.setEnabled(True)
+        self.cancel_btn.setEnabled(any_cancelable)
+        self.restart_btn.setEnabled(any_restartable)
+        self.remove_btn.setEnabled(True)
 
     def toolbar_pause_resume(self):
-        """Pausa ou resume o download selecionado"""
+        """Pausa ou resume todos os downloads selecionados"""
         selected_rows = self.download_table.selectionModel().selectedRows()
         if not selected_rows:
             return
 
-        row = selected_rows[0].row()
-        filename = self.download_table.item(row, 0).text()
-        self.toggle_pause(filename)
+        for index in selected_rows:
+            uid = self.download_table.item(index.row(), 0).data(Qt.ItemDataRole.UserRole)
+            if uid:
+                self.toggle_pause(uid)
 
     def toolbar_cancel(self):
-        """Cancela o download selecionado"""
+        """Cancela todos os downloads selecionados"""
         selected_rows = self.download_table.selectionModel().selectedRows()
         if not selected_rows:
             return
 
-        row = selected_rows[0].row()
-        filename = self.download_table.item(row, 0).text()
-        self.cancel_download(filename)
+        for index in selected_rows:
+            uid = self.download_table.item(index.row(), 0).data(Qt.ItemDataRole.UserRole)
+            if uid:
+                self.cancel_download(uid)
 
     def toolbar_restart(self):
-        """Reinicia o download selecionado"""
+        """Reinicia todos os downloads selecionados"""
         selected_rows = self.download_table.selectionModel().selectedRows()
         if not selected_rows:
             return
 
-        row = selected_rows[0].row()
-        filename = self.download_table.item(row, 0).text()
-        self.restart_download(filename)
+        for index in selected_rows:
+            uid = self.download_table.item(index.row(), 0).data(Qt.ItemDataRole.UserRole)
+            if uid:
+                self.restart_download(uid)
 
     def toolbar_remove(self):
-        """Remove o download selecionado da lista"""
+        """Remove todos os downloads selecionados da lista"""
         selected_rows = self.download_table.selectionModel().selectedRows()
         if not selected_rows:
             return
 
-        row = selected_rows[0].row()
-        filename = self.download_table.item(row, 0).text()
+        uids = [
+            self.download_table.item(index.row(), 0).data(Qt.ItemDataRole.UserRole)
+            for index in selected_rows
+        ]
+        self._remove_by_uids(uids)
 
-        if filename in self.downloads:
-            download_item = self.downloads[filename]
-
-            # Só permite remover se estiver concluído, cancelado ou com erro
-            if download_item.status in [DownloadStatus.COMPLETED, DownloadStatus.CANCELLED, DownloadStatus.ERROR]:
-                del self.downloads[filename]
-                self.download_table.removeRow(row)
-                self.save_downloads()
+    def _remove_by_uids(self, uids):
+        """Remove uma lista de downloads da tabela (apenas concluídos/cancelados/com erro)."""
+        has_active = False
+        removed_any = False
+        for uid in uids:
+            if not uid or uid not in self.downloads:
+                continue
+            download_item = self.downloads[uid]
+            if download_item.status in (
+                DownloadStatus.COMPLETED,
+                DownloadStatus.CANCELLED,
+                DownloadStatus.ERROR,
+            ):
+                row = self._id_to_row.get(uid)
+                if row is not None:
+                    del self.downloads[uid]
+                    self.download_table.removeRow(row)
+                    self._rebuild_row_map()  # índices mudam após cada remoção
+                    removed_any = True
             else:
-                QMessageBox.warning(self, self.t('warning'),
-                                  self.t('warn_remove_active'))
+                has_active = True
+
+        if has_active:
+            QMessageBox.warning(
+                self, self.t("warning"), self.t("warn_remove_active")
+            )
+        if removed_any:
+            self.save_downloads()
 
     def create_settings_tab(self):
         tab = QWidget()
@@ -1124,18 +1367,18 @@ class InternetArchiveGUI(QMainWindow):
         layout.setSpacing(16)
 
         # Título
-        title = QLabel(self.t('settings_title'))
-        title.setProperty('class', 'section-header')
+        title = QLabel(self.t("settings_title"))
+        title.setProperty("class", "section-header")
         layout.addWidget(title)
 
         layout.addSpacing(10)
 
         # Seção: Conta do Internet Archive
-        account_group_label = QLabel(self.t('account_section'))
-        account_group_label.setProperty('class', 'subsection-header')
+        account_group_label = QLabel(self.t("account_section"))
+        account_group_label.setProperty("class", "subsection-header")
         layout.addWidget(account_group_label)
 
-        account_desc = QLabel(self.t('account_description'))
+        account_desc = QLabel(self.t("account_description"))
         layout.addWidget(account_desc)
 
         # Status da conta
@@ -1146,10 +1389,10 @@ class InternetArchiveGUI(QMainWindow):
         # Email
         email_layout = QHBoxLayout()
         email_layout.setSpacing(12)
-        email_label = QLabel(self.t('account_email'))
+        email_label = QLabel(self.t("account_email"))
         email_label.setMinimumWidth(80)
         self.ia_email_input = QLineEdit()
-        self.ia_email_input.setPlaceholderText(self.t('account_email_placeholder'))
+        self.ia_email_input.setPlaceholderText(self.t("account_email_placeholder"))
         email_layout.addWidget(email_label)
         email_layout.addWidget(self.ia_email_input)
         layout.addLayout(email_layout)
@@ -1157,10 +1400,12 @@ class InternetArchiveGUI(QMainWindow):
         # Senha
         password_layout = QHBoxLayout()
         password_layout.setSpacing(12)
-        password_label = QLabel(self.t('account_password'))
+        password_label = QLabel(self.t("account_password"))
         password_label.setMinimumWidth(80)
         self.ia_password_input = QLineEdit()
-        self.ia_password_input.setPlaceholderText(self.t('account_password_placeholder'))
+        self.ia_password_input.setPlaceholderText(
+            self.t("account_password_placeholder")
+        )
         self.ia_password_input.setEchoMode(QLineEdit.EchoMode.Password)
         password_layout.addWidget(password_label)
         password_layout.addWidget(self.ia_password_input)
@@ -1169,11 +1414,11 @@ class InternetArchiveGUI(QMainWindow):
         # Botões de ação
         account_buttons_layout = QHBoxLayout()
         account_buttons_layout.setSpacing(12)
-        self.ia_login_btn = QPushButton(self.t('account_login'))
+        self.ia_login_btn = QPushButton(self.t("account_login"))
         self.ia_login_btn.clicked.connect(self.ia_login)
 
-        self.ia_logout_btn = QPushButton(self.t('account_logout'))
-        self.ia_logout_btn.setProperty('class', 'secondary')
+        self.ia_logout_btn = QPushButton(self.t("account_logout"))
+        self.ia_logout_btn.setProperty("class", "secondary")
         self.ia_logout_btn.clicked.connect(self.ia_logout)
 
         account_buttons_layout.addWidget(self.ia_login_btn)
@@ -1181,35 +1426,35 @@ class InternetArchiveGUI(QMainWindow):
         account_buttons_layout.addStretch()
         layout.addLayout(account_buttons_layout)
 
-        account_note = QLabel(self.t('account_note'))
-        account_note.setProperty('class', 'note')
+        account_note = QLabel(self.t("account_note"))
+        account_note.setProperty("class", "note")
         account_note.setWordWrap(True)
         layout.addWidget(account_note)
 
         layout.addSpacing(20)
 
         # Seção: Pasta Padrão
-        folder_group_label = QLabel(self.t('folder_section'))
-        folder_group_label.setProperty('class', 'subsection-header')
+        folder_group_label = QLabel(self.t("folder_section"))
+        folder_group_label.setProperty("class", "subsection-header")
         layout.addWidget(folder_group_label)
 
         folder_layout = QHBoxLayout()
-        folder_desc = QLabel(self.t('folder_description'))
+        folder_desc = QLabel(self.t("folder_description"))
         folder_layout.addWidget(folder_desc)
         layout.addLayout(folder_layout)
 
         folder_control_layout = QHBoxLayout()
         folder_control_layout.setSpacing(12)
         self.default_folder_input = QLineEdit()
-        self.default_folder_input.setPlaceholderText(self.t('folder_placeholder'))
+        self.default_folder_input.setPlaceholderText(self.t("folder_placeholder"))
         self.default_folder_input.setText(self.default_download_folder)
         self.default_folder_input.setReadOnly(True)
 
-        self.choose_folder_btn = QPushButton(self.t('folder_choose'))
+        self.choose_folder_btn = QPushButton(self.t("folder_choose"))
         self.choose_folder_btn.clicked.connect(self.choose_default_folder)
 
-        self.clear_folder_btn = QPushButton(self.t('folder_clear'))
-        self.clear_folder_btn.setProperty('class', 'secondary')
+        self.clear_folder_btn = QPushButton(self.t("folder_clear"))
+        self.clear_folder_btn.setProperty("class", "secondary")
         self.clear_folder_btn.clicked.connect(self.clear_default_folder)
 
         folder_control_layout.addWidget(self.default_folder_input)
@@ -1220,14 +1465,14 @@ class InternetArchiveGUI(QMainWindow):
         layout.addSpacing(20)
 
         # Seção: Performance
-        perf_group_label = QLabel(self.t('perf_section'))
-        perf_group_label.setProperty('class', 'subsection-header')
+        perf_group_label = QLabel(self.t("perf_section"))
+        perf_group_label.setProperty("class", "subsection-header")
         layout.addWidget(perf_group_label)
 
         concurrent_layout = QHBoxLayout()
         concurrent_layout.setSpacing(12)
-        concurrent_label = QLabel(self.t('perf_concurrent'))
-        concurrent_label.setToolTip(self.t('perf_concurrent_tooltip'))
+        concurrent_label = QLabel(self.t("perf_concurrent"))
+        concurrent_label.setToolTip(self.t("perf_concurrent_tooltip"))
         self.concurrent_spin = QSpinBox()
         self.concurrent_spin.setMinimum(1)
         self.concurrent_spin.setMaximum(10)
@@ -1240,13 +1485,13 @@ class InternetArchiveGUI(QMainWindow):
 
         segments_layout = QHBoxLayout()
         segments_layout.setSpacing(12)
-        segments_label = QLabel(self.t('perf_connections'))
-        segments_label.setToolTip(self.t('perf_connections_tooltip'))
+        segments_label = QLabel(self.t("perf_connections"))
+        segments_label.setToolTip(self.t("perf_connections_tooltip"))
         self.segments_spin = QSpinBox()
         self.segments_spin.setMinimum(1)
         self.segments_spin.setMaximum(16)
         self.segments_spin.setValue(self.segments_per_file)
-        self.segments_spin.setToolTip(self.t('perf_connections_note_tooltip'))
+        self.segments_spin.setToolTip(self.t("perf_connections_note_tooltip"))
         self.segments_spin.valueChanged.connect(self.update_segments_per_file)
         segments_layout.addWidget(segments_label)
         segments_layout.addWidget(self.segments_spin)
@@ -1255,44 +1500,46 @@ class InternetArchiveGUI(QMainWindow):
 
         layout.addSpacing(10)
 
-        perf_note = QLabel(self.t('perf_note'))
-        perf_note.setProperty('class', 'note')
+        perf_note = QLabel(self.t("perf_note"))
+        perf_note.setProperty("class", "note")
         perf_note.setWordWrap(True)
         layout.addWidget(perf_note)
 
         layout.addSpacing(20)
 
         # Seção: Debug e Logs
-        debug_group_label = QLabel(self.t('debug_section'))
-        debug_group_label.setProperty('class', 'subsection-header')
+        debug_group_label = QLabel(self.t("debug_section"))
+        debug_group_label.setProperty("class", "subsection-header")
         layout.addWidget(debug_group_label)
 
-        self.enable_logging_checkbox = QCheckBox(self.t('debug_logging'))
-        self.enable_logging_checkbox.setChecked(self.settings.value('enable_logging', True, type=bool))
+        self.enable_logging_checkbox = QCheckBox(self.t("debug_logging"))
+        self.enable_logging_checkbox.setChecked(
+            self.settings.value("enable_logging", True, type=bool)
+        )
         self.enable_logging_checkbox.stateChanged.connect(self.toggle_logging)
         layout.addWidget(self.enable_logging_checkbox)
 
-        logging_note = QLabel(self.t('debug_note'))
-        logging_note.setProperty('class', 'note')
+        logging_note = QLabel(self.t("debug_note"))
+        logging_note.setProperty("class", "note")
         logging_note.setWordWrap(True)
         layout.addWidget(logging_note)
 
         layout.addSpacing(20)
 
         # Seção: Idioma / Language
-        language_group_label = QLabel('🌐 Idioma / Language')
-        language_group_label.setProperty('class', 'subsection-header')
+        language_group_label = QLabel("🌐 Idioma / Language")
+        language_group_label.setProperty("class", "subsection-header")
         layout.addWidget(language_group_label)
 
         language_layout = QHBoxLayout()
         language_layout.setSpacing(12)
-        language_label = QLabel('Idioma da interface / Interface language:')
+        language_label = QLabel("Idioma da interface / Interface language:")
         self.language_combo = QComboBox()
-        self.language_combo.addItem('Português (Brasil)', 'pt-BR')
-        self.language_combo.addItem('English (US)', 'en')
+        self.language_combo.addItem("Português (Brasil)", "pt-BR")
+        self.language_combo.addItem("English (US)", "en")
 
         # Set current language
-        current_index = 0 if self.current_language == 'pt-BR' else 1
+        current_index = 0 if self.current_language == "pt-BR" else 1
         self.language_combo.setCurrentIndex(current_index)
 
         self.language_combo.currentIndexChanged.connect(self.change_language)
@@ -1302,8 +1549,10 @@ class InternetArchiveGUI(QMainWindow):
         language_layout.addStretch()
         layout.addLayout(language_layout)
 
-        language_note = QLabel('💡 Nota: O aplicativo será reiniciado para aplicar o novo idioma\n💡 Note: The application will restart to apply the new language')
-        language_note.setProperty('class', 'note')
+        language_note = QLabel(
+            "💡 Nota: O aplicativo será reiniciado para aplicar o novo idioma\n💡 Note: The application will restart to apply the new language"
+        )
+        language_note.setProperty("class", "note")
         language_note.setWordWrap(True)
         layout.addWidget(language_note)
 
@@ -1325,44 +1574,55 @@ class InternetArchiveGUI(QMainWindow):
             has_s3_keys = bool(session.access_key and session.secret_key)
 
             log(f"[ACCOUNT] has_cookies={has_cookies}, has_s3_keys={has_s3_keys}")
-            log(f"[ACCOUNT] access_key={session.access_key}, secret_key={'***' if session.secret_key else None}")
+            log(
+                f"[ACCOUNT] access_key={session.access_key}, secret_key={'***' if session.secret_key else None}"
+            )
 
             if has_cookies or has_s3_keys:
                 # Tenta identificar o email se possível
-                email = getattr(session, 'user_email', None) or 'configurada'
-                self.account_status_label.setText(self.t('account_configured'))
-                self.account_status_label.setProperty('class', 'success')
+                email = getattr(session, "user_email", None) or "configurada"
+                self.account_status_label.setText(self.t("account_configured"))
+                self.account_status_label.setProperty("class", "success")
                 log(f"[ACCOUNT] Conta detectada: {email}")
                 return
 
             # Se não encontrou credenciais, verifica arquivos de configuração manualmente
             config_paths = [
-                os.path.expanduser('~/.config/ia.ini'),
-                os.path.expanduser('~/.ia'),
-                os.path.join(os.environ.get('APPDATA', ''), 'ia.ini') if os.name == 'nt' else None,
+                os.path.expanduser("~/.config/ia.ini"),
+                os.path.expanduser("~/.ia"),
+                os.path.join(os.environ.get("APPDATA", ""), "ia.ini")
+                if os.name == "nt"
+                else None,
             ]
 
             for config_file in config_paths:
                 if config_file and os.path.exists(config_file):
                     log(f"[ACCOUNT] Verificando arquivo: {config_file}")
-                    with open(config_file, 'r') as f:
+                    with open(config_file, "r") as f:
                         content = f.read()
-                        if 'cookies' in content or 'access' in content or 'secret' in content:
-                            self.account_status_label.setText(self.t('account_configured_file'))
-                            self.account_status_label.setProperty('class', 'success')
+                        if (
+                            "cookies" in content
+                            or "access" in content
+                            or "secret" in content
+                        ):
+                            self.account_status_label.setText(
+                                self.t("account_configured_file")
+                            )
+                            self.account_status_label.setProperty("class", "success")
                             log(f"[ACCOUNT] Credenciais encontradas em: {config_file}")
                             return
 
-            self.account_status_label.setText(self.t('account_not_configured'))
-            self.account_status_label.setProperty('class', 'muted')
+            self.account_status_label.setText(self.t("account_not_configured"))
+            self.account_status_label.setProperty("class", "muted")
             log("[ACCOUNT] Nenhuma credencial encontrada")
 
         except Exception as e:
             log(f"[ACCOUNT] Erro ao verificar status: {e}")
             import traceback
+
             traceback.print_exc()
-            self.account_status_label.setText(self.t('account_unknown'))
-            self.account_status_label.setProperty('class', 'muted')
+            self.account_status_label.setText(self.t("account_unknown"))
+            self.account_status_label.setProperty("class", "muted")
 
     def ia_login(self):
         """Faz login na conta do Internet Archive"""
@@ -1370,7 +1630,7 @@ class InternetArchiveGUI(QMainWindow):
         password = self.ia_password_input.text().strip()
 
         if not email or not password:
-            QMessageBox.warning(self, self.t('warning'), self.t('warn_account_fill'))
+            QMessageBox.warning(self, self.t("warning"), self.t("warn_account_fill"))
             return
 
         try:
@@ -1386,27 +1646,36 @@ class InternetArchiveGUI(QMainWindow):
                 self.update_account_status()
                 self.ia_email_input.clear()
                 self.ia_password_input.clear()
-                QMessageBox.information(self, self.t('success'),
-                                      self.t('success_login'))
+                QMessageBox.information(
+                    self, self.t("success"), self.t("success_login")
+                )
                 log(f"[ACCOUNT] Login bem-sucedido para: {email}")
             else:
-                QMessageBox.warning(self, self.t('error'), 'Falha ao fazer login. Verifique suas credenciais.')
+                QMessageBox.warning(
+                    self,
+                    self.t("error"),
+                    "Falha ao fazer login. Verifique suas credenciais.",
+                )
 
         except Exception as e:
             log(f"[ACCOUNT] Erro ao fazer login: {e}")
-            QMessageBox.critical(self, self.t('error'),
-                               self.t('error_login', error=str(e)))
+            QMessageBox.critical(
+                self, self.t("error"), self.t("error_login", error=str(e))
+            )
 
     def ia_logout(self):
         """Remove credenciais do Internet Archive"""
-        reply = QMessageBox.question(self, self.t('confirm'),
-                                     self.t('confirm_logout'),
-                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        reply = QMessageBox.question(
+            self,
+            self.t("confirm"),
+            self.t("confirm_logout"),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
 
         if reply == QMessageBox.StandardButton.Yes:
             try:
-                config_file = os.path.expanduser('~/.config/ia.ini')
-                config_file_alt = os.path.expanduser('~/.ia')  # Arquivo alternativo
+                config_file = os.path.expanduser("~/.config/ia.ini")
+                config_file_alt = os.path.expanduser("~/.ia")  # Arquivo alternativo
 
                 removed = False
 
@@ -1417,7 +1686,9 @@ class InternetArchiveGUI(QMainWindow):
 
                 if os.path.exists(config_file_alt):
                     os.remove(config_file_alt)
-                    log(f"[ACCOUNT] Arquivo de configuração alternativo removido: {config_file_alt}")
+                    log(
+                        f"[ACCOUNT] Arquivo de configuração alternativo removido: {config_file_alt}"
+                    )
                     removed = True
 
                 self.update_account_status()
@@ -1425,29 +1696,37 @@ class InternetArchiveGUI(QMainWindow):
                 self.ia_password_input.clear()
 
                 if removed:
-                    QMessageBox.information(self, self.t('success'), self.t('success_logout'))
+                    QMessageBox.information(
+                        self, self.t("success"), self.t("success_logout")
+                    )
                 else:
-                    QMessageBox.information(self, self.t('info'), self.t('success_logout_none'))
+                    QMessageBox.information(
+                        self, self.t("info"), self.t("success_logout_none")
+                    )
 
             except Exception as e:
                 log(f"[ACCOUNT] Erro ao remover credenciais: {e}")
-                QMessageBox.critical(self, self.t('error'), self.t('error_logout', error=str(e)))
+                QMessageBox.critical(
+                    self, self.t("error"), self.t("error_logout", error=str(e))
+                )
 
     def choose_default_folder(self):
         """Abre diálogo para escolher pasta padrão"""
-        folder = QFileDialog.getExistingDirectory(self, self.t('folder_dialog_title'), self.default_download_folder)
+        folder = QFileDialog.getExistingDirectory(
+            self, self.t("folder_dialog_title"), self.default_download_folder
+        )
 
         if folder:
             self.default_download_folder = folder
             self.default_folder_input.setText(folder)
-            self.settings.setValue('default_download_folder', folder)
+            self.settings.setValue("default_download_folder", folder)
             log(f"[CONFIG] Pasta padrão definida: {folder}")
 
     def clear_default_folder(self):
         """Limpa a pasta padrão"""
-        self.default_download_folder = ''
-        self.default_folder_input.setText('')
-        self.settings.setValue('default_download_folder', '')
+        self.default_download_folder = ""
+        self.default_folder_input.setText("")
+        self.settings.setValue("default_download_folder", "")
         log("[CONFIG] Pasta padrão removida")
 
     def toggle_logging(self, state):
@@ -1461,10 +1740,12 @@ class InternetArchiveGUI(QMainWindow):
             print("[CONFIG] Desabilitando logs...")
 
         self.set_logging_enabled(enabled)
-        self.settings.setValue('enable_logging', enabled)
+        self.settings.setValue("enable_logging", enabled)
 
         # Confirma a mudança (só aparece se logs estiverem habilitados)
-        log(f"[CONFIG] Logs agora estão {'habilitados' if enabled else 'desabilitados'}")
+        log(
+            f"[CONFIG] Logs agora estão {'habilitados' if enabled else 'desabilitados'}"
+        )
 
     def set_logging_enabled(self, enabled):
         """Define se os logs devem ser exibidos"""
@@ -1473,50 +1754,124 @@ class InternetArchiveGUI(QMainWindow):
     def add_file_on_double_click(self, item):
         """Adiciona arquivo à fila ao dar duplo clique (usa pasta padrão)"""
         if not self.default_download_folder:
-            QMessageBox.warning(self, self.t('info_no_default_folder_title'),
-                              self.t('warn_no_default_folder'))
+            QMessageBox.warning(
+                self,
+                self.t("info_no_default_folder_title"),
+                self.t("warn_no_default_folder"),
+            )
             return
 
         filename = item.data(Qt.ItemDataRole.UserRole)
+        log(
+            f"[QUICK-ADD] Arquivo adicionado via duplo clique: {filename} -> {self.default_download_folder}"
+        )
+        self._add_single_file_to_queue(filename, self.default_download_folder)
 
-        if filename in self.downloads:
-            QMessageBox.information(self, self.t('info_already_queued'),
-                                  self.t('warn_already_queued', filename=filename))
+    def show_file_list_context_menu(self, position):
+        """Mostra menu de contexto ao clicar com botão direito na lista de arquivos"""
+        item = self.file_list.itemAt(position)
+        if not item:
             return
 
+        context_menu = QMenu(self)
+
+        download_now_action = context_menu.addAction(self.t("context_download_now"))
+        download_as_action = context_menu.addAction(self.t("context_download_as"))
+
+        # Desabilita "Baixar Agora" se não há pasta padrão configurada
+        if not self.default_download_folder:
+            download_now_action.setEnabled(False)
+            download_now_action.setToolTip(self.t("warn_no_default_folder"))
+
+        action = context_menu.exec(self.file_list.viewport().mapToGlobal(position))
+
+        if action == download_now_action:
+            self._context_download_now()
+        elif action == download_as_action:
+            self._context_download_as()
+
+    def _context_download_now(self):
+        """Baixa os arquivos selecionados usando a pasta padrão"""
+        if not self.default_download_folder:
+            QMessageBox.warning(
+                self,
+                self.t("info_no_default_folder_title"),
+                self.t("warn_no_default_folder"),
+            )
+            return
+
+        selected_items = self.file_list.selectedItems()
+        if not selected_items:
+            return
+
+        for item in selected_items:
+            filename = item.data(Qt.ItemDataRole.UserRole)
+            self._add_single_file_to_queue(filename, self.default_download_folder)
+
+    def _context_download_as(self):
+        """Baixa os arquivos selecionados permitindo escolher a pasta de destino"""
+        selected_items = self.file_list.selectedItems()
+        if not selected_items:
+            return
+
+        dest_folder = QFileDialog.getExistingDirectory(
+            self, self.t("folder_dialog_title"), self.default_download_folder
+        )
+
+        if not dest_folder:
+            return
+
+        for item in selected_items:
+            filename = item.data(Qt.ItemDataRole.UserRole)
+            self._add_single_file_to_queue(filename, dest_folder)
+
+    def _add_single_file_to_queue(self, filename, dest_folder):
+        """Adiciona um único arquivo à fila de download"""
         identifier = self.id_input.text().strip()
 
-        # Busca o tamanho do arquivo na lista
         file_size = 0
         for f in self.all_files:
-            if f['name'] == filename:
-                file_size = int(f.get('size', 0))
+            if f["name"] == filename:
+                file_size = int(f.get("size", 0))
                 break
 
-        download_item = DownloadItem(identifier, filename, self.default_download_folder, segments=self.segments_per_file)
+        download_item = DownloadItem(
+            identifier, filename, dest_folder, segments=self.segments_per_file
+        )
         download_item.total_bytes = file_size
-        self.downloads[filename] = download_item
+
+        if self._is_duplicate(download_item):
+            QMessageBox.information(
+                self,
+                self.t("info_already_queued"),
+                self.t("warn_already_queued", filename=filename),
+            )
+            return
+
+        self.downloads[download_item.unique_id] = download_item
         self.add_download_to_table(download_item)
         self.download_manager.add_download(download_item)
 
-        log(f"[QUICK-ADD] Arquivo adicionado via duplo clique: {filename} -> {self.default_download_folder}")
-
-        # Feedback visual rápido
-        self.statusBar().showMessage(self.t('info_added_to_queue', filename=filename), 3000)
+        log(f"[CONTEXT-MENU] Arquivo adicionado: {filename} -> {dest_folder}")
+        self.statusBar().showMessage(
+            self.t("info_added_to_queue", filename=filename), 3000
+        )
 
     def start_download_manager(self):
         self.download_manager = DownloadManager(self.max_concurrent)
         self.download_manager.download_started.connect(self.on_download_started)
         self.download_manager.start()
-    
+
     def search_files(self):
         identifier = self.id_input.text().strip()
 
         if not identifier:
-            QMessageBox.warning(self, self.t('warning'), self.t('warn_identifier_empty'))
+            QMessageBox.warning(
+                self, self.t("warning"), self.t("warn_identifier_empty")
+            )
             return
 
-        self.status_label.setText(self.t('searching_item', identifier=identifier))
+        self.status_label.setText(self.t("searching_item", identifier=identifier))
         self.file_list.clear()
         self.search_btn.setEnabled(False)
 
@@ -1524,64 +1879,75 @@ class InternetArchiveGUI(QMainWindow):
             self.item = ia.get_item(identifier)
 
             if not self.item.exists:
-                QMessageBox.warning(self, self.t('error'), self.t('item_not_found', identifier=identifier))
-                self.status_label.setText('')
+                QMessageBox.warning(
+                    self,
+                    self.t("error"),
+                    self.t("item_not_found", identifier=identifier),
+                )
+                self.status_label.setText("")
                 self.search_btn.setEnabled(True)
                 return
 
             files = list(self.item.files)
 
             if not files:
-                QMessageBox.information(self, self.t('info'), self.t('no_files_found'))
-                self.status_label.setText('')
+                QMessageBox.information(self, self.t("info"), self.t("no_files_found"))
+                self.status_label.setText("")
                 self.search_btn.setEnabled(True)
                 return
 
             self.all_files = files
 
             for file in files:
-                item_widget = QListWidgetItem(f"{file['name']} ({format_size(file.get('size', 0))})")
-                item_widget.setData(Qt.ItemDataRole.UserRole, file['name'])
+                item_widget = QListWidgetItem(
+                    f"{file['name']} ({format_size(file.get('size', 0))})"
+                )
+                item_widget.setData(Qt.ItemDataRole.UserRole, file["name"])
                 self.file_list.addItem(item_widget)
 
-            self.status_label.setText(self.t('files_found', count=len(files)))
+            self.status_label.setText(self.t("files_found", count=len(files)))
             self.download_btn.setEnabled(True)
 
             self.add_to_recent(identifier)
 
             # Salva como último identifier usado
             self.last_identifier = identifier
-            self.settings.setValue('last_identifier', identifier)
+            self.settings.setValue("last_identifier", identifier)
             log(f"[CONFIG] Último identifier salvo: {identifier}")
 
         except Exception as e:
-            QMessageBox.critical(self, self.t('error'), self.t('error_load_files', error=str(e)))
-            self.status_label.setText('')
+            QMessageBox.critical(
+                self, self.t("error"), self.t("error_load_files", error=str(e))
+            )
+            self.status_label.setText("")
 
         finally:
             self.search_btn.setEnabled(True)
-    
+
     def filter_files(self):
         filter_text = self.filter_input.text().lower()
-        
+
         for i in range(self.file_list.count()):
             item = self.file_list.item(i)
             filename = item.data(Qt.ItemDataRole.UserRole).lower()
-            
+
             if not filter_text or filter_text in filename:
                 item.setHidden(False)
             else:
                 item.setHidden(True)
-    
-    
+
     def add_to_queue(self):
         selected_items = self.file_list.selectedItems()
 
         if not selected_items:
-            QMessageBox.warning(self, self.t('warning'), self.t('warn_no_files_selected'))
+            QMessageBox.warning(
+                self, self.t("warning"), self.t("warn_no_files_selected")
+            )
             return
 
-        dest_folder = QFileDialog.getExistingDirectory(self, self.t('folder_dialog_title'))
+        dest_folder = QFileDialog.getExistingDirectory(
+            self, self.t("folder_dialog_title")
+        )
 
         if not dest_folder:
             return
@@ -1591,35 +1957,44 @@ class InternetArchiveGUI(QMainWindow):
         for item in selected_items:
             filename = item.data(Qt.ItemDataRole.UserRole)
 
-            if filename in self.downloads:
-                QMessageBox.warning(self, self.t('warning'),
-                                  self.t('warn_file_already_queued', filename=filename))
-                continue
-
             # Busca o tamanho do arquivo na lista
             file_size = 0
             for f in self.all_files:
-                if f['name'] == filename:
-                    file_size = int(f.get('size', 0))
+                if f["name"] == filename:
+                    file_size = int(f.get("size", 0))
                     break
 
-            download_item = DownloadItem(identifier, filename, dest_folder, segments=self.segments_per_file)
-            download_item.total_bytes = file_size  # Define o tamanho total
-            self.downloads[filename] = download_item
+            download_item = DownloadItem(
+                identifier, filename, dest_folder, segments=self.segments_per_file
+            )
+            download_item.total_bytes = file_size
+
+            if self._is_duplicate(download_item):
+                QMessageBox.warning(
+                    self,
+                    self.t("warning"),
+                    self.t("warn_file_already_queued", filename=filename),
+                )
+                continue
+
+            self.downloads[download_item.unique_id] = download_item
             self.add_download_to_table(download_item)
             self.download_manager.add_download(download_item)
 
-        QMessageBox.information(self, self.t('success'),
-                              self.t('info_files_added', count=len(selected_items)))
-    
+        QMessageBox.information(
+            self,
+            self.t("success"),
+            self.t("info_files_added", count=len(selected_items)),
+        )
+
     def show_add_url_dialog(self):
         """Mostra dialog para adicionar URL"""
         url, ok = QInputDialog.getText(
             self,
-            self.t('add_url_title'),
-            self.t('add_url_prompt'),
+            self.t("add_url_title"),
+            self.t("add_url_prompt"),
             QLineEdit.EchoMode.Normal,
-            ""
+            "",
         )
 
         if ok and url:
@@ -1628,31 +2003,55 @@ class InternetArchiveGUI(QMainWindow):
     def add_url_to_queue(self, url):
         """Adiciona URL à fila de downloads"""
         if not url:
-            QMessageBox.warning(self, self.t('warning'), self.t('warn_url_empty'))
+            QMessageBox.warning(self, self.t("warning"), self.t("warn_url_empty"))
             return
 
-        dest_folder = QFileDialog.getExistingDirectory(self, self.t('folder_dialog_title'))
+        last_url_folder = self.settings.value(
+            "last_url_download_folder", self.default_download_folder
+        )
+        dest_folder = QFileDialog.getExistingDirectory(
+            self, self.t("folder_dialog_title"), last_url_folder
+        )
 
         if not dest_folder:
             return
 
-        filename = url.split('/')[-1]
+        filename = unquote(url.split("/")[-1])
 
-        if filename in self.downloads:
-            QMessageBox.warning(self, self.t('warning'),
-                              self.t('warn_already_queued', filename=filename))
+        self.settings.setValue("last_url_download_folder", dest_folder)
+
+        download_item = DownloadItem(
+            "", filename, dest_folder, url=url, segments=self.segments_per_file
+        )
+
+        if self._is_duplicate(download_item):
+            QMessageBox.warning(
+                self,
+                self.t("warning"),
+                self.t("warn_already_queued", filename=filename),
+            )
             return
 
-        download_item = DownloadItem("", filename, dest_folder, url=url, segments=self.segments_per_file)
-        self.downloads[filename] = download_item
+        self.downloads[download_item.unique_id] = download_item
         self.add_download_to_table(download_item)
         self.download_manager.add_download(download_item)
 
-        QMessageBox.information(self, self.t('success'), self.t('info_file_added'))
-    
+        QMessageBox.information(self, self.t("success"), self.t("info_file_added"))
+
+    def _rebuild_row_map(self):
+        """Rebuilds unique_id→row dict after rows are inserted or removed."""
+        self._id_to_row = {}
+        for r in range(self.download_table.rowCount()):
+            item = self.download_table.item(r, 0)
+            if item:
+                uid = item.data(Qt.ItemDataRole.UserRole)
+                if uid:
+                    self._id_to_row[uid] = r
+
     def add_download_to_table(self, download_item):
         row = self.download_table.rowCount()
         self.download_table.insertRow(row)
+        self._id_to_row[download_item.unique_id] = row
 
         # Coluna de arquivo com tooltip mostrando datas
         filename_item = QTableWidgetItem(download_item.filename)
@@ -1660,14 +2059,19 @@ class InternetArchiveGUI(QMainWindow):
         # Cria tooltip com informações de data
         tooltip_parts = [
             f"{self.t('tooltip_id')}: {download_item.unique_id[:8]}...",
-            f"{self.t('tooltip_added')}: {download_item.date_added.strftime('%Y-%m-%d %H:%M:%S')}"
+            f"{self.t('tooltip_added')}: {download_item.date_added.strftime('%Y-%m-%d %H:%M:%S')}",
         ]
         if download_item.date_completed:
-            tooltip_parts.append(f"{self.t('tooltip_completed')}: {download_item.date_completed.strftime('%Y-%m-%d %H:%M:%S')}")
+            tooltip_parts.append(
+                f"{self.t('tooltip_completed')}: {download_item.date_completed.strftime('%Y-%m-%d %H:%M:%S')}"
+            )
 
-        filename_item.setToolTip('\n'.join(tooltip_parts))
+        filename_item.setToolTip("\n".join(tooltip_parts))
+        # Store unique_id as UserData so all row→download lookups use the stable
+        # UUID key instead of the display filename (which may not be unique).
+        filename_item.setData(Qt.ItemDataRole.UserRole, download_item.unique_id)
         self.download_table.setItem(row, 0, filename_item)
-        
+
         status_item = QTableWidgetItem(download_item.status.value)
         self.download_table.setItem(row, 1, status_item)
 
@@ -1690,156 +2094,164 @@ class InternetArchiveGUI(QMainWindow):
         elif download_item.status == DownloadStatus.WAITING:
             status_item.setBackground(QColor(240, 240, 255))  # Azul muito claro
             status_item.setForeground(QColor(0, 0, 139))  # Azul escuro
-        
+
         progress_bar = QProgressBar()
         progress_bar.setValue(download_item.progress)
         self.download_table.setCellWidget(row, 2, progress_bar)
-        
+
         # Mostra tamanhos com os valores do download_item
-        log(f"[TABLE] Adicionando à tabela: downloaded={download_item.downloaded_bytes}, total={download_item.total_bytes}")
-        
+        log(
+            f"[TABLE] Adicionando à tabela: downloaded={download_item.downloaded_bytes}, total={download_item.total_bytes}"
+        )
+
         if download_item.total_bytes > 0:
             size_text = f"{format_size(download_item.downloaded_bytes)} / {format_size(download_item.total_bytes)}"
         else:
-            size_text = self.t('calculating')
-        
+            size_text = self.t("calculating")
+
         log(f"[TABLE] Texto do tamanho: {size_text}")
-        
+
         size_item = QTableWidgetItem(size_text)
         self.download_table.setItem(row, 3, size_item)
-        
+
         speed_item = QTableWidgetItem("0 B/s")
         self.download_table.setItem(row, 4, speed_item)
 
         # Coluna de conexões
-        connections_text = f"{download_item.segments}x" if download_item.segments > 1 else "1x"
+        connections_text = (
+            f"{download_item.segments}x" if download_item.segments > 1 else "1x"
+        )
         connections_item = QTableWidgetItem(connections_text)
-        connections_item.setToolTip(self.t('tooltip_connections', count=download_item.segments))
+        connections_item.setToolTip(
+            self.t("tooltip_connections", count=download_item.segments)
+        )
         self.download_table.setItem(row, 5, connections_item)
 
         # Coluna de mensagem
         self.download_table.setItem(row, 6, QTableWidgetItem(download_item.error_msg))
-    
-    def on_download_started(self, filename):
-        if filename in self.downloads:
-            download_item = self.downloads[filename]
+
+    def on_download_started(self, uid):
+        if uid in self.downloads:
+            download_item = self.downloads[uid]
             if download_item.thread:
                 download_item.thread.progress_updated.connect(
-                    lambda fn, data: self.update_progress(fn, data))
+                    lambda u, data: self.update_progress(u, data)
+                )
                 download_item.thread.status_changed.connect(
-                    lambda fn, status, msg: self.update_status(fn, status, msg))
-    
-    def update_progress(self, filename, data):
-        log(f"[UPDATE_PROGRESS] RECEBIDO: filename={filename}")
-        log(f"[UPDATE_PROGRESS] RECEBIDO: data={data} (type={type(data)})")
-        
-        # Extrai dados do dicionário
-        progress = data.get('progress', 0)
-        downloaded = data.get('downloaded', 0)
-        total = data.get('total', 0)
-        speed = data.get('speed', 0.0)
-        
-        log(f"[UPDATE_PROGRESS] EXTRAÍDO: progress={progress}%, downloaded={downloaded}, total={total}, speed={speed}")
-        
-        if filename in self.downloads:
-            self.downloads[filename].progress = progress
-            self.downloads[filename].downloaded_bytes = downloaded
-            # IMPORTANTE: Só atualiza total_bytes se for maior que 0 e válido
-            if total > 0 and total < 100000000000000:  # Menor que 100TB (valor razoável)
-                self.downloads[filename].total_bytes = total
-            self.downloads[filename].speed = speed
-            
-            # Salva periodicamente (a cada 5% de progresso)
-            if progress % 5 == 0:
-                self.save_downloads()
-        
-        for row in range(self.download_table.rowCount()):
-            if self.download_table.item(row, 0).text() == filename:
-                progress_bar = self.download_table.cellWidget(row, 2)
-                if progress_bar:
-                    progress_bar.setValue(progress)
-                
-                size_text = f"{format_size(downloaded)} / {format_size(total)}"
-                log(f"[UPDATE_PROGRESS] size_text={size_text}")
-                
-                size_item = self.download_table.item(row, 3)
-                if size_item:
-                    size_item.setText(size_text)
-                    log(f"[UPDATE_PROGRESS] Tamanho atualizado na GUI: {size_text}")
-                
-                speed_text = f"{format_size(speed)}/s" if speed > 0 else "0 B/s"
-                speed_item = self.download_table.item(row, 4)
-                if speed_item:
-                    speed_item.setText(speed_text)
-                
-                break
-    
-    def update_status(self, filename, status, error_msg):
-        if filename in self.downloads:
-            self.downloads[filename].status = status
-            self.downloads[filename].error_msg = error_msg
+                    lambda u, status, msg: self.update_status(u, status, msg)
+                )
+
+            # The thread emits status_changed(DOWNLOADING) the moment it starts,
+            # which is before this slot runs and connects the signal — that first
+            # emission is lost.  Force the status update here so the download is
+            # immediately pauseable/cancellable.
+            self.update_status(uid, DownloadStatus.DOWNLOADING, "")
+
+    def update_progress(self, uid, data):
+        progress = data.get("progress", 0)
+        downloaded = data.get("downloaded", 0)
+        total = data.get("total", 0)
+        speed = data.get("speed", 0.0)
+
+        if uid in self.downloads:
+            dl = self.downloads[uid]
+            dl.progress = progress
+            dl.downloaded_bytes = downloaded
+            if 0 < total < 100_000_000_000_000:  # sanity: < 100 TB
+                dl.total_bytes = total
+            dl.speed = speed
+
+        row = self._id_to_row.get(uid)
+        if row is not None:
+            progress_bar = self.download_table.cellWidget(row, 2)
+            if progress_bar:
+                progress_bar.setValue(progress)
+
+            size_item = self.download_table.item(row, 3)
+            if size_item:
+                size_item.setText(f"{format_size(downloaded)} / {format_size(total)}")
+
+            speed_item = self.download_table.item(row, 4)
+            if speed_item:
+                speed_item.setText(f"{format_size(speed)}/s" if speed > 0 else "0 B/s")
+
+    def update_status(self, uid, status, error_msg):
+        if uid in self.downloads:
+            self.downloads[uid].status = status
+            self.downloads[uid].error_msg = error_msg
 
             # Define date_completed quando o download é concluído
-            if status == DownloadStatus.COMPLETED and self.downloads[filename].date_completed is None:
+            if (
+                status == DownloadStatus.COMPLETED
+                and self.downloads[uid].date_completed is None
+            ):
                 from datetime import datetime
-                self.downloads[filename].date_completed = datetime.now()
-                log(f"[STATUS] Download concluído: {filename} em {self.downloads[filename].date_completed}")
+
+                self.downloads[uid].date_completed = datetime.now()
+                log(
+                    f"[STATUS] Download concluído: {self.downloads[uid].filename} em {self.downloads[uid].date_completed}"
+                )
 
             # Salva automaticamente quando o status muda
-            if status in [DownloadStatus.COMPLETED, DownloadStatus.ERROR, DownloadStatus.PAUSED]:
+            if status in [
+                DownloadStatus.COMPLETED,
+                DownloadStatus.ERROR,
+                DownloadStatus.PAUSED,
+            ]:
                 self.save_downloads()
-        
-        for row in range(self.download_table.rowCount()):
-            if self.download_table.item(row, 0).text() == filename:
-                # Atualiza tooltip do filename se foi concluído
-                if status == DownloadStatus.COMPLETED:
-                    filename_item = self.download_table.item(row, 0)
-                    download_item = self.downloads[filename]
-                    tooltip_parts = [
-                        f"{self.t('tooltip_id')}: {download_item.unique_id[:8]}...",
-                        f"{self.t('tooltip_added')}: {download_item.date_added.strftime('%Y-%m-%d %H:%M:%S')}"
-                    ]
-                    if download_item.date_completed:
-                        tooltip_parts.append(f"{self.t('tooltip_completed')}: {download_item.date_completed.strftime('%Y-%m-%d %H:%M:%S')}")
-                    filename_item.setToolTip('\n'.join(tooltip_parts))
 
-                status_item = self.download_table.item(row, 1)
-                status_item.setText(status.value)
+        row = self._id_to_row.get(uid)
+        if row is not None:
+            # Atualiza tooltip do filename se foi concluído
+            if status == DownloadStatus.COMPLETED:
+                filename_item = self.download_table.item(row, 0)
+                download_item = self.downloads[uid]
+                tooltip_parts = [
+                    f"{self.t('tooltip_id')}: {download_item.unique_id[:8]}...",
+                    f"{self.t('tooltip_added')}: {download_item.date_added.strftime('%Y-%m-%d %H:%M:%S')}",
+                ]
+                if download_item.date_completed:
+                    tooltip_parts.append(
+                        f"{self.t('tooltip_completed')}: {download_item.date_completed.strftime('%Y-%m-%d %H:%M:%S')}"
+                    )
+                filename_item.setToolTip("\n".join(tooltip_parts))
 
-                # Aplica cores com melhor contraste
-                if status == DownloadStatus.COMPLETED:
-                    status_item.setBackground(QColor(200, 255, 200))  # Verde claro
-                    status_item.setForeground(QColor(0, 100, 0))  # Verde escuro
-                elif status == DownloadStatus.ERROR:
-                    status_item.setBackground(QColor(255, 200, 200))  # Vermelho claro
-                    status_item.setForeground(QColor(139, 0, 0))  # Vermelho escuro
-                elif status == DownloadStatus.CANCELLED:
-                    status_item.setBackground(QColor(220, 220, 220))  # Cinza claro
-                    status_item.setForeground(QColor(60, 60, 60))  # Cinza escuro
-                elif status == DownloadStatus.DOWNLOADING:
-                    status_item.setBackground(QColor(173, 216, 230))  # Azul claro
-                    status_item.setForeground(QColor(0, 51, 102))  # Azul escuro
-                elif status == DownloadStatus.PAUSED:
-                    status_item.setBackground(QColor(255, 255, 180))  # Amarelo claro
-                    status_item.setForeground(QColor(139, 139, 0))  # Amarelo escuro
-                elif status == DownloadStatus.WAITING:
-                    status_item.setBackground(QColor(240, 240, 255))  # Azul muito claro
-                    status_item.setForeground(QColor(0, 0, 139))  # Azul escuro
+            status_item = self.download_table.item(row, 1)
+            status_item.setText(status.value)
 
-                # Atualiza mensagem de erro
-                msg_item = self.download_table.item(row, 6)
-                msg_item.setText(error_msg)
+            # Aplica cores com melhor contraste
+            if status == DownloadStatus.COMPLETED:
+                status_item.setBackground(QColor(200, 255, 200))  # Verde claro
+                status_item.setForeground(QColor(0, 100, 0))  # Verde escuro
+            elif status == DownloadStatus.ERROR:
+                status_item.setBackground(QColor(255, 200, 200))  # Vermelho claro
+                status_item.setForeground(QColor(139, 0, 0))  # Vermelho escuro
+            elif status == DownloadStatus.CANCELLED:
+                status_item.setBackground(QColor(220, 220, 220))  # Cinza claro
+                status_item.setForeground(QColor(60, 60, 60))  # Cinza escuro
+            elif status == DownloadStatus.DOWNLOADING:
+                status_item.setBackground(QColor(173, 216, 230))  # Azul claro
+                status_item.setForeground(QColor(0, 51, 102))  # Azul escuro
+            elif status == DownloadStatus.PAUSED:
+                status_item.setBackground(QColor(255, 255, 180))  # Amarelo claro
+                status_item.setForeground(QColor(139, 139, 0))  # Amarelo escuro
+            elif status == DownloadStatus.WAITING:
+                status_item.setBackground(QColor(240, 240, 255))  # Azul muito claro
+                status_item.setForeground(QColor(0, 0, 139))  # Azul escuro
 
-                # Atualiza botões da toolbar se esta linha estiver selecionada
-                self.update_toolbar_buttons()
-                break
-    
-    def toggle_pause(self, filename):
-        if filename not in self.downloads:
+            # Atualiza mensagem de erro
+            msg_item = self.download_table.item(row, 6)
+            msg_item.setText(error_msg)
+
+            # Atualiza botões da toolbar se esta linha estiver selecionada
+            self.update_toolbar_buttons()
+
+    def toggle_pause(self, uid):
+        if uid not in self.downloads:
             return
-        
-        download_item = self.downloads[filename]
-        
+
+        download_item = self.downloads[uid]
+
         # Se não tem thread rodando (download pausado de sessão anterior)
         if not download_item.thread or not download_item.thread.isRunning():
             # Apenas inicia se realmente estava pausado
@@ -1849,70 +2261,67 @@ class InternetArchiveGUI(QMainWindow):
                 download_item.status = DownloadStatus.WAITING
 
                 # Atualiza GUI
-                for row in range(self.download_table.rowCount()):
-                    if self.download_table.item(row, 0).text() == filename:
-                        status_item = self.download_table.item(row, 1)
-                        status_item.setText(DownloadStatus.WAITING.value)
-                        status_item.setBackground(QColor(255, 255, 255))
-                        break
+                row = self._id_to_row.get(uid)
+                if row is not None:
+                    status_item = self.download_table.item(row, 1)
+                    status_item.setText(DownloadStatus.WAITING.value)
+                    status_item.setBackground(QColor(255, 255, 255))
 
                 self.update_toolbar_buttons()
             return
 
-        # Se tem thread rodando, pausa ou retoma
-        if download_item.status == DownloadStatus.DOWNLOADING:
-            # Pausa a thread
+        # Se tem thread rodando, pausa ou retoma.
+        # WAITING is treated the same as DOWNLOADING: the thread may still show
+        # WAITING if the initial status_changed(DOWNLOADING) signal fired before
+        # its connection was registered in on_download_started.
+        if download_item.status in [DownloadStatus.DOWNLOADING, DownloadStatus.WAITING]:
             download_item.thread.pause()
             download_item.status = DownloadStatus.PAUSED
 
-            for row in range(self.download_table.rowCount()):
-                if self.download_table.item(row, 0).text() == filename:
-                    status_item = self.download_table.item(row, 1)
-                    status_item.setText(DownloadStatus.PAUSED.value)
-                    status_item.setBackground(QColor(255, 255, 224))
-                    break
+            row = self._id_to_row.get(uid)
+            if row is not None:
+                status_item = self.download_table.item(row, 1)
+                status_item.setText(DownloadStatus.PAUSED.value)
+                status_item.setBackground(QColor(255, 255, 180))
+                status_item.setForeground(QColor(139, 139, 0))
 
             self.save_downloads()
             self.update_toolbar_buttons()
 
         elif download_item.status == DownloadStatus.PAUSED:
-            # Retoma a thread
             download_item.thread.resume()
             download_item.status = DownloadStatus.DOWNLOADING
 
-            for row in range(self.download_table.rowCount()):
-                if self.download_table.item(row, 0).text() == filename:
-                    status_item = self.download_table.item(row, 1)
-                    status_item.setText(DownloadStatus.DOWNLOADING.value)
-                    status_item.setBackground(QColor(173, 216, 230))
-                    break
+            row = self._id_to_row.get(uid)
+            if row is not None:
+                status_item = self.download_table.item(row, 1)
+                status_item.setText(DownloadStatus.DOWNLOADING.value)
+                status_item.setBackground(QColor(173, 216, 230))
+                status_item.setForeground(QColor(0, 51, 102))
 
             self.save_downloads()
             self.update_toolbar_buttons()
 
-        elif download_item.status == DownloadStatus.WAITING:
-            # Se está aguardando mas tem thread, não faz nada
-            # Aguarda iniciar para depois poder pausar
-            pass
-    
-    def cancel_download(self, filename):
-        if filename not in self.downloads:
+    def cancel_download(self, uid):
+        if uid not in self.downloads:
             return
 
-        download_item = self.downloads[filename]
+        download_item = self.downloads[uid]
 
         if download_item.thread and download_item.thread.isRunning():
             download_item.thread.cancel()
             download_item.thread.wait()
 
-        self.update_status(filename, DownloadStatus.CANCELLED, self.t('status_cancelled_by_user'))
+        self.update_status(
+            uid, DownloadStatus.CANCELLED, self.t("status_cancelled_by_user")
+        )
 
-    def restart_download(self, filename):
+    def restart_download(self, uid):
         """Recomeça um download cancelado do zero"""
-        if filename not in self.downloads:
+        if uid not in self.downloads:
             return
 
-        download_item = self.downloads[filename]
+        download_item = self.downloads[uid]
 
         # Remove arquivo principal se existir
         dest_path = os.path.join(download_item.dest_folder, download_item.filename)
@@ -1943,80 +2352,84 @@ class InternetArchiveGUI(QMainWindow):
 
         # Atualiza data de adição (considerando como nova tentativa)
         from datetime import datetime
+
         download_item.date_added = datetime.now()
 
-        log(f"[RESTART] Download reiniciado: {filename}")
+        log(f"[RESTART] Download reiniciado: {download_item.filename}")
 
         # Adiciona à fila novamente
         self.download_manager.add_download(download_item)
 
         # Atualiza GUI
-        for row in range(self.download_table.rowCount()):
-            if self.download_table.item(row, 0).text() == filename:
-                # Atualiza status
-                status_item = self.download_table.item(row, 1)
-                status_item.setText(DownloadStatus.WAITING.value)
-                status_item.setBackground(QColor(240, 240, 255))  # Azul muito claro
-                status_item.setForeground(QColor(0, 0, 139))  # Azul escuro
+        row = self._id_to_row.get(uid)
+        if row is not None:
+            # Atualiza status
+            status_item = self.download_table.item(row, 1)
+            status_item.setText(DownloadStatus.WAITING.value)
+            status_item.setBackground(QColor(240, 240, 255))  # Azul muito claro
+            status_item.setForeground(QColor(0, 0, 139))  # Azul escuro
 
-                # Reset progresso
-                progress_bar = self.download_table.cellWidget(row, 2)
-                if progress_bar:
-                    progress_bar.setValue(0)
+            # Reset progresso
+            progress_bar = self.download_table.cellWidget(row, 2)
+            if progress_bar:
+                progress_bar.setValue(0)
 
-                # Reset tamanho
-                if download_item.total_bytes > 0:
-                    size_text = f"0 B / {format_size(download_item.total_bytes)}"
-                else:
-                    size_text = self.t('calculating')
-                size_item = self.download_table.item(row, 3)
-                if size_item:
-                    size_item.setText(size_text)
+            # Reset tamanho
+            size_text = (
+                f"0 B / {format_size(download_item.total_bytes)}"
+                if download_item.total_bytes > 0
+                else self.t("calculating")
+            )
+            size_item = self.download_table.item(row, 3)
+            if size_item:
+                size_item.setText(size_text)
 
-                # Reset velocidade
-                speed_item = self.download_table.item(row, 4)
-                if speed_item:
-                    speed_item.setText("0 B/s")
+            # Reset velocidade
+            speed_item = self.download_table.item(row, 4)
+            if speed_item:
+                speed_item.setText("0 B/s")
 
-                # Limpa mensagem de erro
-                msg_item = self.download_table.item(row, 6)
-                if msg_item:
-                    msg_item.setText("")
-
-                break
+            # Limpa mensagem de erro
+            msg_item = self.download_table.item(row, 6)
+            if msg_item:
+                msg_item.setText("")
 
         # Atualiza toolbar
         self.update_toolbar_buttons()
-    
+
     def clear_completed(self):
         rows_to_remove = []
-        
+
         for row in range(self.download_table.rowCount()):
-            filename = self.download_table.item(row, 0).text()
-            if filename in self.downloads:
-                status = self.downloads[filename].status
-                if status in [DownloadStatus.COMPLETED, DownloadStatus.CANCELLED, 
-                            DownloadStatus.ERROR]:
+            uid = self.download_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+            if uid and uid in self.downloads:
+                status = self.downloads[uid].status
+                if status in [
+                    DownloadStatus.COMPLETED,
+                    DownloadStatus.CANCELLED,
+                    DownloadStatus.ERROR,
+                ]:
                     rows_to_remove.append(row)
-                    del self.downloads[filename]
-        
+                    del self.downloads[uid]
+
         for row in reversed(rows_to_remove):
             self.download_table.removeRow(row)
-    
+        self._rebuild_row_map()
+
     def cancel_all(self):
-        for filename in list(self.downloads.keys()):
-            self.cancel_download(filename)
-    
+        for uid in list(self.downloads.keys()):
+            self.cancel_download(uid)
+
     def update_concurrent_limit(self, value):
         self.max_concurrent = value
         if self.download_manager:
             self.download_manager.update_max_concurrent(value)
-        self.settings.setValue('max_concurrent', value)
+        self.settings.setValue("max_concurrent", value)
         log(f"[CONFIG] Downloads simultâneos alterado para: {value}")
 
     def update_segments_per_file(self, value):
         self.segments_per_file = value
-        self.settings.setValue('segments_per_file', value)
+        self.settings.setValue("segments_per_file", value)
         log(f"[CONFIG] Conexões por arquivo alterado para: {value}")
 
     def change_language(self, index):
@@ -2027,18 +2440,18 @@ class InternetArchiveGUI(QMainWindow):
             return  # Não precisa fazer nada se é o mesmo idioma
 
         # Salva o novo idioma
-        self.settings.setValue('language', new_language)
+        self.settings.setValue("language", new_language)
         log(f"[CONFIG] Idioma alterado para: {new_language}")
 
         # Confirma com o usuário que o app será reiniciado
         reply = QMessageBox.question(
             self,
-            'Reiniciar / Restart',
-            'O aplicativo precisa ser reiniciado para aplicar o novo idioma.\n'
-            'The application needs to restart to apply the new language.\n\n'
-            'Deseja reiniciar agora?\n'
-            'Do you want to restart now?',
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            "Reiniciar / Restart",
+            "O aplicativo precisa ser reiniciado para aplicar o novo idioma.\n"
+            "The application needs to restart to apply the new language.\n\n"
+            "Deseja reiniciar agora?\n"
+            "Do you want to restart now?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
 
         if reply == QMessageBox.StandardButton.Yes:
@@ -2047,101 +2460,172 @@ class InternetArchiveGUI(QMainWindow):
 
             # Reinicia o aplicativo
             import subprocess
+
             subprocess.Popen([sys.executable] + sys.argv)
             QApplication.quit()
         else:
             # Restaura o combo box para o idioma atual
-            current_index = 0 if self.current_language == 'pt-BR' else 1
+            current_index = 0 if self.current_language == "pt-BR" else 1
             self.language_combo.blockSignals(True)
             self.language_combo.setCurrentIndex(current_index)
             self.language_combo.blockSignals(False)
 
     def show_context_menu(self, position):
         """Mostra menu de contexto ao clicar com botão direito na tabela"""
-        # Pega o item clicado
         item = self.download_table.itemAt(position)
         if not item:
             return
 
         row = item.row()
         column = item.column()
+        uid = self.download_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        if not uid or uid not in self.downloads:
+            return
 
-        # Menu para coluna de mensagem (coluna 6)
-        if column == 6:
+        # Se o item clicado está dentro da seleção atual, as ações se aplicam a
+        # todos os selecionados; caso contrário, apenas ao item clicado.
+        selected_row_indices = {
+            idx.row()
+            for idx in self.download_table.selectionModel().selectedRows()
+        }
+        if row in selected_row_indices:
+            target_uids = [
+                self.download_table.item(r, 0).data(Qt.ItemDataRole.UserRole)
+                for r in sorted(selected_row_indices)
+                if self.download_table.item(r, 0)
+            ]
+        else:
+            target_uids = [uid]
+
+        # Agrega status de todos os itens alvo
+        any_pauseable  = False
+        any_resumable  = False
+        any_cancelable = False
+        any_restartable = False
+        any_removable  = False
+
+        for u in target_uids:
+            if not u or u not in self.downloads:
+                continue
+            s = self.downloads[u].status
+            if s in (DownloadStatus.DOWNLOADING, DownloadStatus.WAITING):
+                any_pauseable = True
+            if s == DownloadStatus.PAUSED:
+                any_resumable = True
+            if s not in (DownloadStatus.CANCELLED, DownloadStatus.COMPLETED):
+                any_cancelable = True
+            if s == DownloadStatus.CANCELLED:
+                any_restartable = True
+            if s in (DownloadStatus.COMPLETED, DownloadStatus.CANCELLED, DownloadStatus.ERROR):
+                any_removable = True
+
+        context_menu = QMenu(self)
+
+        # --- Ações de gerenciamento ---
+        if any_pauseable or any_resumable:
+            if any_pauseable and any_resumable:
+                pr_label = "⏸/▶ " + self.t("action_pause") + "/" + self.t("action_resume")
+            elif any_pauseable:
+                pr_label = "⏸ " + self.t("action_pause")
+            else:
+                pr_label = "▶ " + self.t("action_resume")
+            pause_action = context_menu.addAction(pr_label)
+            pause_action.triggered.connect(
+                lambda checked=False, us=target_uids: [self.toggle_pause(u) for u in us]
+            )
+
+        if any_cancelable:
+            cancel_action = context_menu.addAction("✕ " + self.t("action_cancel"))
+            cancel_action.triggered.connect(
+                lambda checked=False, us=target_uids: [self.cancel_download(u) for u in us]
+            )
+
+        if any_restartable:
+            restart_action = context_menu.addAction("↻ " + self.t("action_restart"))
+            restart_action.triggered.connect(
+                lambda checked=False, us=target_uids: [self.restart_download(u) for u in us]
+            )
+
+        if any_removable:
+            remove_action = context_menu.addAction("🗑 " + self.t("action_remove"))
+            remove_action.triggered.connect(
+                lambda checked=False, us=target_uids: self._remove_by_uids(us)
+            )
+
+        # --- Ações específicas de coluna ---
+        download_item = self.downloads[uid]
+        file_path = os.path.join(download_item.dest_folder, download_item.filename)
+
+        has_file_actions = (
+            (column == 0 and (os.path.exists(file_path) or os.path.exists(download_item.dest_folder)))
+            or (column == 6 and bool(self.download_table.item(row, 6) and self.download_table.item(row, 6).text()))
+        )
+
+        if not context_menu.isEmpty() and has_file_actions:
+            context_menu.addSeparator()
+
+        if column == 0:
+            if os.path.exists(file_path):
+                open_file_action = context_menu.addAction(self.t("context_open_file"))
+                open_file_action.triggered.connect(lambda: self.open_file(file_path))
+
+            if os.path.exists(download_item.dest_folder):
+                open_folder_action = context_menu.addAction(self.t("context_open_folder"))
+                open_folder_action.triggered.connect(
+                    lambda: self.open_folder(download_item.dest_folder)
+                )
+
+        elif column == 6:
             msg_item = self.download_table.item(row, 6)
             if msg_item and msg_item.text():
-                # Cria o menu
-                menu = QApplication.instance().sender().parentWidget().window()
-                context_menu = QMenu(menu)
+                msg_text = msg_item.text()
+                copy_action = context_menu.addAction(self.t("context_copy"))
+                copy_action.triggered.connect(
+                    lambda: self.copy_message_to_clipboard(msg_text)
+                )
 
-                # Adiciona ação de copiar
-                copy_action = context_menu.addAction(self.t('context_copy'))
-                copy_action.triggered.connect(lambda: self.copy_message_to_clipboard(msg_item.text()))
-
-                # Mostra o menu na posição do cursor
-                context_menu.exec(self.download_table.viewport().mapToGlobal(position))
-
-        # Menu para coluna de arquivo (coluna 0)
-        elif column == 0:
-            filename_item = self.download_table.item(row, 0)
-            if filename_item:
-                filename = filename_item.text()
-
-                # Pega o download_item
-                if filename in self.downloads:
-                    download_item = self.downloads[filename]
-                    file_path = os.path.join(download_item.dest_folder, download_item.filename)
-
-                    # Cria o menu
-                    menu = QApplication.instance().sender().parentWidget().window()
-                    context_menu = QMenu(menu)
-
-                    # Adiciona ação de abrir arquivo (só se o arquivo existir)
-                    if os.path.exists(file_path):
-                        open_file_action = context_menu.addAction(self.t('context_open_file'))
-                        open_file_action.triggered.connect(lambda: self.open_file(file_path))
-
-                    # Adiciona ação de abrir pasta (só se a pasta existir)
-                    if os.path.exists(download_item.dest_folder):
-                        open_folder_action = context_menu.addAction(self.t('context_open_folder'))
-                        open_folder_action.triggered.connect(lambda: self.open_folder(download_item.dest_folder))
-
-                    # Mostra o menu na posição do cursor
-                    context_menu.exec(self.download_table.viewport().mapToGlobal(position))
+        if not context_menu.isEmpty():
+            context_menu.exec(self.download_table.viewport().mapToGlobal(position))
 
     def copy_message_to_clipboard(self, text):
         """Copia texto para a área de transferência"""
         clipboard = QApplication.clipboard()
         clipboard.setText(text)
-        log(f"[CLIPBOARD] Mensagem copiada: {text[:50]}..." if len(text) > 50 else f"[CLIPBOARD] Mensagem copiada: {text}")
+        log(
+            f"[CLIPBOARD] Mensagem copiada: {text[:50]}..."
+            if len(text) > 50
+            else f"[CLIPBOARD] Mensagem copiada: {text}"
+        )
 
     def open_file(self, file_path):
         """Abre o arquivo com o programa padrão do sistema"""
         try:
-            if platform.system() == 'Windows':
+            if platform.system() == "Windows":
                 os.startfile(file_path)
-            elif platform.system() == 'Darwin':  # macOS
-                subprocess.run(['open', file_path])
+            elif platform.system() == "Darwin":  # macOS
+                subprocess.run(["open", file_path])
             else:  # Linux e outros
-                subprocess.run(['xdg-open', file_path])
+                subprocess.run(["xdg-open", file_path])
             log(f"[FILE] Abrindo arquivo: {file_path}")
         except Exception as e:
             log(f"[FILE] Erro ao abrir arquivo: {e}")
-            QMessageBox.warning(self, self.t('error'), f"Could not open file: {str(e)}")
+            QMessageBox.warning(self, self.t("error"), f"Could not open file: {str(e)}")
 
     def open_folder(self, folder_path):
         """Abre a pasta no gerenciador de arquivos"""
         try:
-            if platform.system() == 'Windows':
+            if platform.system() == "Windows":
                 os.startfile(folder_path)
-            elif platform.system() == 'Darwin':  # macOS
-                subprocess.run(['open', folder_path])
+            elif platform.system() == "Darwin":  # macOS
+                subprocess.run(["open", folder_path])
             else:  # Linux e outros
-                subprocess.run(['xdg-open', folder_path])
+                subprocess.run(["xdg-open", folder_path])
             log(f"[FOLDER] Abrindo pasta: {folder_path}")
         except Exception as e:
             log(f"[FOLDER] Erro ao abrir pasta: {e}")
-            QMessageBox.warning(self, self.t('error'), f"Could not open folder: {str(e)}")
+            QMessageBox.warning(
+                self, self.t("error"), f"Could not open folder: {str(e)}"
+            )
 
     def on_download_table_double_click(self, row, column):
         """Trata duplo clique na tabela de downloads - abre o arquivo"""
@@ -2149,49 +2633,53 @@ class InternetArchiveGUI(QMainWindow):
         if column == 0:
             filename_item = self.download_table.item(row, 0)
             if filename_item:
-                filename = filename_item.text()
+                uid = filename_item.data(Qt.ItemDataRole.UserRole)
 
-                # Pega o download_item
-                if filename in self.downloads:
-                    download_item = self.downloads[filename]
-                    file_path = os.path.join(download_item.dest_folder, download_item.filename)
+                if uid and uid in self.downloads:
+                    download_item = self.downloads[uid]
+                    file_path = os.path.join(
+                        download_item.dest_folder, download_item.filename
+                    )
 
                     # Abre o arquivo se ele existir
                     if os.path.exists(file_path):
                         self.open_file(file_path)
                     else:
-                        QMessageBox.warning(self, self.t('error'),
-                                          f"File not found: {file_path}")
+                        QMessageBox.warning(
+                            self, self.t("error"), f"File not found: {file_path}"
+                        )
 
     def show_history(self):
         if not self.recent_identifiers:
-            QMessageBox.information(self, self.t('history_button'),
-                                  self.t('history_empty'))
+            QMessageBox.information(
+                self, self.t("history_button"), self.t("history_empty")
+            )
             return
 
         from PyQt6.QtWidgets import QDialog
 
         dialog = QDialog(self)
-        dialog.setWindowTitle(self.t('history_title'))
+        dialog.setWindowTitle(self.t("history_title"))
         dialog.setGeometry(200, 200, 500, 400)
 
         layout = QVBoxLayout(dialog)
 
-        label = QLabel(self.t('history_instruction'))
+        label = QLabel(self.t("history_instruction"))
         layout.addWidget(label)
 
         history_list = QListWidget()
         history_list.addItems(self.recent_identifiers)
         history_list.itemDoubleClicked.connect(
-            lambda item: self.load_from_history(item.text(), dialog))
+            lambda item: self.load_from_history(item.text(), dialog)
+        )
         layout.addWidget(history_list)
 
         button_layout = QHBoxLayout()
 
-        clear_btn = QPushButton(self.t('history_clear'))
+        clear_btn = QPushButton(self.t("history_clear"))
         clear_btn.clicked.connect(lambda: self.clear_history(dialog))
 
-        close_btn = QPushButton(self.t('history_close'))
+        close_btn = QPushButton(self.t("history_close"))
         close_btn.clicked.connect(dialog.close)
 
         button_layout.addWidget(clear_btn)
@@ -2201,25 +2689,29 @@ class InternetArchiveGUI(QMainWindow):
         layout.addLayout(button_layout)
 
         dialog.exec()
-    
+
     def load_from_history(self, identifier, dialog):
         self.id_input.setText(identifier)
         dialog.close()
         self.search_files()
-    
+
     def clear_history(self, dialog):
-        reply = QMessageBox.question(self, self.t('confirm'),
-                                     self.t('confirm_clear_history'),
-                                     QMessageBox.StandardButton.Yes |
-                                     QMessageBox.StandardButton.No)
+        reply = QMessageBox.question(
+            self,
+            self.t("confirm"),
+            self.t("confirm_clear_history"),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
 
         if reply == QMessageBox.StandardButton.Yes:
             self.recent_identifiers = []
             self.save_recent_identifiers()
             self.update_completer()
             dialog.close()
-            QMessageBox.information(self, self.t('success'), self.t('success_history_cleared'))
-    
+            QMessageBox.information(
+                self, self.t("success"), self.t("success_history_cleared")
+            )
+
     def update_completer(self):
         self.completer.model().setStringList(self.recent_identifiers)
 
@@ -2228,34 +2720,36 @@ class InternetArchiveGUI(QMainWindow):
 
     def show_search_history(self):
         if not self.recent_searches:
-            QMessageBox.information(self, self.t('search_history_button'),
-                                  self.t('search_history_empty'))
+            QMessageBox.information(
+                self, self.t("search_history_button"), self.t("search_history_empty")
+            )
             return
 
         from PyQt6.QtWidgets import QDialog
 
         dialog = QDialog(self)
-        dialog.setWindowTitle(self.t('search_history_title'))
+        dialog.setWindowTitle(self.t("search_history_title"))
         dialog.setGeometry(200, 200, 600, 400)
 
         layout = QVBoxLayout(dialog)
 
-        label = QLabel(self.t('search_history_instruction'))
+        label = QLabel(self.t("search_history_instruction"))
         layout.addWidget(label)
 
         history_list = QListWidget()
         history_list.addItems(self.recent_searches)
         history_list.itemDoubleClicked.connect(
-            lambda item: self.load_search_from_history(item.text(), dialog))
+            lambda item: self.load_search_from_history(item.text(), dialog)
+        )
         layout.addWidget(history_list)
 
         button_layout = QHBoxLayout()
 
-        clear_button = QPushButton(self.t('history_clear'))
+        clear_button = QPushButton(self.t("history_clear"))
         clear_button.clicked.connect(lambda: self.clear_search_history(dialog))
         button_layout.addWidget(clear_button)
 
-        close_button = QPushButton(self.t('history_close'))
+        close_button = QPushButton(self.t("history_close"))
         close_button.clicked.connect(dialog.close)
         button_layout.addWidget(close_button)
 
@@ -2269,17 +2763,22 @@ class InternetArchiveGUI(QMainWindow):
         self.search_archive()
 
     def clear_search_history(self, dialog):
-        reply = QMessageBox.question(self, self.t('confirm'),
-                                     self.t('confirm_clear_search_history'),
-                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                                     QMessageBox.StandardButton.No)
+        reply = QMessageBox.question(
+            self,
+            self.t("confirm"),
+            self.t("confirm_clear_search_history"),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
 
         if reply == QMessageBox.StandardButton.Yes:
             self.recent_searches = []
             self.save_recent_searches()
             self.update_search_completer()
             dialog.close()
-            QMessageBox.information(self, self.t('success'), self.t('success_search_history_cleared'))
+            QMessageBox.information(
+                self, self.t("success"), self.t("success_search_history_cleared")
+            )
 
     def closeEvent(self, event):
         # Pausa todos os downloads em progresso antes de fechar
@@ -2289,40 +2788,40 @@ class InternetArchiveGUI(QMainWindow):
                     # Pausa em vez de cancelar para poder retomar depois
                     download_item.thread.pause()
                     download_item.status = DownloadStatus.PAUSED
-        
+
         # Aguarda um pouco para garantir que pausou
         time.sleep(0.5)
-        
+
         # Agora pode cancelar as threads
         for filename, download_item in list(self.downloads.items()):
             if download_item.thread and download_item.thread.isRunning():
                 download_item.thread.resume()  # Resume para poder cancelar
                 download_item.thread.cancel()
-        
+
         # Aguarda threads terminarem
         max_wait = 2.0
         start_time = time.time()
-        
+
         while time.time() - start_time < max_wait:
             all_stopped = True
             for download_item in self.downloads.values():
                 if download_item.thread and download_item.thread.isRunning():
                     all_stopped = False
                     break
-            
+
             if all_stopped:
                 break
-            
+
             QApplication.processEvents()
             time.sleep(0.1)
-        
+
         # Salva downloads antes de fechar
         self.save_downloads()
-        
+
         if self.download_manager:
             self.download_manager.stop()
             self.download_manager.wait(2000)
-        
+
         event.accept()
 
 
@@ -2333,5 +2832,5 @@ def main():
     sys.exit(app.exec())
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

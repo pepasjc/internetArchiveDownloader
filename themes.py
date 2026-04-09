@@ -16,20 +16,22 @@ def get_modern_theme():
 
         /* Tabs */
         QTabWidget::pane {
-            border: none;
+            border: 1px solid #cbd5e1;
             background-color: white;
-            border-radius: 8px;
-            margin-top: 10px;
+            border-radius: 0 8px 8px 8px;
+            margin-top: 0;
         }
 
         QTabBar::tab {
             background-color: #e8ecf1;
             color: #5a6c7d;
-            border: none;
-            padding: 12px 20px;
-            margin-right: 4px;
-            border-top-left-radius: 8px;
-            border-top-right-radius: 8px;
+            border: 1px solid #cbd5e1;
+            border-bottom: none;
+            padding: 10px 22px;
+            margin-right: 2px;
+            margin-bottom: -1px;
+            border-top-left-radius: 6px;
+            border-top-right-radius: 6px;
             font-weight: 500;
         }
 
@@ -37,10 +39,16 @@ def get_modern_theme():
             background-color: white;
             color: #2563eb;
             font-weight: 600;
+            border-color: #cbd5e1;
         }
 
-        QTabBar::tab:hover {
+        QTabBar::tab:!selected {
+            margin-top: 2px;
+        }
+
+        QTabBar::tab:hover:!selected {
             background-color: #dde3ea;
+            color: #374151;
         }
 
         /* Labels */
@@ -236,13 +244,15 @@ def get_modern_theme():
             border-radius: 4px;
         }
 
-        /* SpinBox */
+        /* SpinBox — padding must NOT be used here; it clips the up/down buttons.
+           Use min-height to control size instead. */
         QSpinBox {
-            padding: 8px 12px;
+            min-height: 34px;
             border: 2px solid #e2e8f0;
             border-radius: 6px;
             background-color: white;
             min-width: 80px;
+            font-size: 13px;
         }
 
         QSpinBox:focus {
@@ -395,20 +405,22 @@ def get_dark_theme():
 
         /* Tabs */
         QTabWidget::pane {
-            border: none;
+            border: 1px solid #334155;
             background-color: #1e293b;
-            border-radius: 8px;
-            margin-top: 10px;
+            border-radius: 0 8px 8px 8px;
+            margin-top: 0;
         }
 
         QTabBar::tab {
-            background-color: #334155;
-            color: #94a3b8;
-            border: none;
-            padding: 12px 20px;
-            margin-right: 4px;
-            border-top-left-radius: 8px;
-            border-top-right-radius: 8px;
+            background-color: #0f172a;
+            color: #64748b;
+            border: 1px solid #334155;
+            border-bottom: none;
+            padding: 10px 22px;
+            margin-right: 2px;
+            margin-bottom: -1px;
+            border-top-left-radius: 6px;
+            border-top-right-radius: 6px;
             font-weight: 500;
         }
 
@@ -416,10 +428,16 @@ def get_dark_theme():
             background-color: #1e293b;
             color: #60a5fa;
             font-weight: 600;
+            border-color: #334155;
         }
 
-        QTabBar::tab:hover {
-            background-color: #475569;
+        QTabBar::tab:!selected {
+            margin-top: 2px;
+        }
+
+        QTabBar::tab:hover:!selected {
+            background-color: #1e2d42;
+            color: #94a3b8;
         }
 
         /* Labels */
@@ -628,14 +646,16 @@ def get_dark_theme():
             border-radius: 4px;
         }
 
-        /* SpinBox */
+        /* SpinBox — padding must NOT be used here; it clips the up/down buttons.
+           Use min-height to control size instead. */
         QSpinBox {
-            padding: 8px 12px;
+            min-height: 34px;
             border: 2px solid #334155;
             border-radius: 6px;
             background-color: #1e293b;
             color: #e2e8f0;
             min-width: 80px;
+            font-size: 13px;
         }
 
         QSpinBox:focus {

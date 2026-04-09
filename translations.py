@@ -223,6 +223,8 @@ TRANSLATIONS = {
         'context_open_file': '📂 Abrir arquivo',
         'context_open_folder': '📁 Abrir pasta',
         'context_show_matching_files': '🔍 Mostrar Arquivos Correspondentes',
+        'context_download_now': '⬇ Baixar Agora',
+        'context_download_as': '📁 Baixar Como...',
 
         # Tooltips
         'tooltip_connections': '{count} conexão(ões) simultânea(s)',
@@ -467,6 +469,8 @@ TRANSLATIONS = {
         'context_open_file': '📂 Open File',
         'context_open_folder': '📁 Open Folder',
         'context_show_matching_files': '🔍 Show Matching Files',
+        'context_download_now': '⬇ Download Now',
+        'context_download_as': '📁 Download As...',
 
         # Tooltips
         'tooltip_connections': '{count} simultaneous connection(s)',
