@@ -94,6 +94,9 @@ TRANSLATIONS = {
         'action_cancel': 'Cancelar',
         'action_restart': 'Recomeçar',
         'action_remove': 'Remover',
+        'action_move_up': 'Subir Prioridade',
+        'action_move_down': 'Baixar Prioridade',
+        'action_force_download': 'Forçar Download',
         'add_url_button': 'Adicionar URL',
         'add_url_title': 'Adicionar Download por URL',
         'add_url_prompt': 'Digite a URL do arquivo para download:',
@@ -225,6 +228,8 @@ TRANSLATIONS = {
         'context_show_matching_files': '🔍 Mostrar Arquivos Correspondentes',
         'context_download_now': '⬇ Baixar Agora',
         'context_download_as': '📁 Baixar Como...',
+        'context_select_all': '☑ Selecionar Todos',
+        'context_copy_filenames': '📋 Copiar Nomes dos Arquivos',
 
         # Tooltips
         'tooltip_connections': '{count} conexão(ões) simultânea(s)',
@@ -340,6 +345,9 @@ TRANSLATIONS = {
         'action_cancel': 'Cancel',
         'action_restart': 'Restart',
         'action_remove': 'Remove',
+        'action_move_up': 'Move Up',
+        'action_move_down': 'Move Down',
+        'action_force_download': 'Force Download',
         'add_url_button': 'Add URL',
         'add_url_title': 'Add Download by URL',
         'add_url_prompt': 'Enter the file URL to download:',
@@ -471,6 +479,8 @@ TRANSLATIONS = {
         'context_show_matching_files': '🔍 Show Matching Files',
         'context_download_now': '⬇ Download Now',
         'context_download_as': '📁 Download As...',
+        'context_select_all': '☑ Select All',
+        'context_copy_filenames': '📋 Copy File Names',
 
         # Tooltips
         'tooltip_connections': '{count} simultaneous connection(s)',

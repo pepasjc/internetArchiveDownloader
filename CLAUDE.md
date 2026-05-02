@@ -108,7 +108,7 @@ The `Translator` class in translations.py manages bilingual strings:
 - `segments_per_file` - Connections per file (default: 4)
 - `enable_logging` - Console logging toggle
 - `language` - UI language ('pt' or 'en')
-- `recent_identifiers` - List of identifier search history (max 20 items)
+- `recent_identifiers` - List of identifier search history (max 50 items)
 - `recent_searches` - List of archive search query history (max 20 items)
 
 ### Styling Considerations

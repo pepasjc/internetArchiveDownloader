@@ -173,25 +173,59 @@ class InternetArchiveGUI(QMainWindow):
                     log(f"[LOAD] Total bytes do dict: {download_item.total_bytes}")
                     # Usa o tamanho salvo em cache (evita chamada de rede bloqueante na inicialização)
 
-                    # Atualiza downloaded_bytes com o tamanho atual do arquivo
+                    # Atualiza downloaded_bytes com o tamanho atual do arquivo.
+                    # Considera tanto o arquivo final quanto segmentos .partN
+                    # (downloads multi-segment não finalizados).
                     dest_path = os.path.join(
                         download_item.dest_folder, download_item.filename
                     )
-                    if os.path.exists(dest_path):
-                        download_item.downloaded_bytes = os.path.getsize(dest_path)
-                        log(
-                            f"[LOAD] Arquivo encontrado no disco: {download_item.downloaded_bytes} bytes ({format_size(download_item.downloaded_bytes)})"
+                    main_size = (
+                        os.path.getsize(dest_path) if os.path.exists(dest_path) else 0
+                    )
+                    parts_size = 0
+                    for i in range(max(download_item.segments, 1)):
+                        seg = f"{dest_path}.part{i}"
+                        if os.path.exists(seg):
+                            parts_size += os.path.getsize(seg)
+
+                    on_disk = main_size if main_size > 0 else parts_size
+                    download_item.downloaded_bytes = on_disk
+                    log(
+                        f"[LOAD] Disco: main={main_size} parts={parts_size} → {on_disk} bytes ({format_size(on_disk)})"
+                    )
+                    if download_item.total_bytes > 0:
+                        download_item.progress = min(
+                            100,
+                            int((on_disk / download_item.total_bytes) * 100),
                         )
-                        if download_item.total_bytes > 0:
-                            download_item.progress = int(
-                                (download_item.downloaded_bytes / download_item.total_bytes)
-                                * 100
-                            )
-                            log(f"[LOAD] Progresso calculado: {download_item.progress}%")
+                        log(f"[LOAD] Progresso calculado: {download_item.progress}%")
                     else:
-                        log(f"[LOAD] Arquivo não encontrado no disco: {dest_path}")
-                        download_item.downloaded_bytes = 0
                         download_item.progress = 0
+
+                    # Recuperação: status COMPLETED salvo mas:
+                    #  (a) bytes em disco < total (download não terminou), OU
+                    #  (b) arquivo final ausente mas existem .partN
+                    #      (segmentos baixados mas merge nunca rodou)
+                    needs_recovery = False
+                    if download_item.status == DownloadStatus.COMPLETED:
+                        if (
+                            download_item.total_bytes > 0
+                            and on_disk < download_item.total_bytes
+                        ):
+                            needs_recovery = True
+                            log(
+                                f"[LOAD] AVISO: marcado COMPLETED mas só {on_disk}/{download_item.total_bytes} no disco."
+                            )
+                        elif main_size == 0 and parts_size > 0:
+                            needs_recovery = True
+                            log(
+                                f"[LOAD] AVISO: marcado COMPLETED mas merge não rodou (parts={parts_size}, main ausente)."
+                            )
+
+                    if needs_recovery:
+                        log(f"[LOAD] Restaurando como PAUSED para permitir retomar/mergear.")
+                        download_item.status = DownloadStatus.PAUSED
+                        download_item.date_completed = None
 
                     log(f"[LOAD] Status: {download_item.status.value}")
                     log(
@@ -256,7 +290,7 @@ class InternetArchiveGUI(QMainWindow):
             self.recent_identifiers.remove(identifier)
 
         self.recent_identifiers.insert(0, identifier)
-        self.recent_identifiers = self.recent_identifiers[:20]
+        self.recent_identifiers = self.recent_identifiers[:50]
 
         self.save_recent_identifiers()
         self.update_completer()
@@ -1150,10 +1184,24 @@ class InternetArchiveGUI(QMainWindow):
         self.remove_btn.clicked.connect(self.toolbar_remove)
         self.remove_btn.setEnabled(False)
 
+        self.priority_up_btn = QPushButton("⬆ " + self.t("action_move_up"))
+        self.priority_up_btn.setProperty("class", "secondary")
+        self.priority_up_btn.setToolTip(self.t("action_move_up"))
+        self.priority_up_btn.clicked.connect(self.move_priority_up)
+        self.priority_up_btn.setEnabled(False)
+
+        self.priority_down_btn = QPushButton("⬇ " + self.t("action_move_down"))
+        self.priority_down_btn.setProperty("class", "secondary")
+        self.priority_down_btn.setToolTip(self.t("action_move_down"))
+        self.priority_down_btn.clicked.connect(self.move_priority_down)
+        self.priority_down_btn.setEnabled(False)
+
         toolbar_layout.addWidget(self.pause_resume_btn)
         toolbar_layout.addWidget(self.cancel_btn)
         toolbar_layout.addWidget(self.restart_btn)
         toolbar_layout.addWidget(self.remove_btn)
+        toolbar_layout.addWidget(self.priority_up_btn)
+        toolbar_layout.addWidget(self.priority_down_btn)
         toolbar_layout.addStretch()
 
         self.add_url_btn = QPushButton("🔗 " + self.t("add_url_button"))
@@ -1247,6 +1295,8 @@ class InternetArchiveGUI(QMainWindow):
             self.cancel_btn.setEnabled(False)
             self.restart_btn.setEnabled(False)
             self.remove_btn.setEnabled(False)
+            self.priority_up_btn.setEnabled(False)
+            self.priority_down_btn.setEnabled(False)
             return
 
         # Agrega os status de todos os itens selecionados
@@ -1259,15 +1309,21 @@ class InternetArchiveGUI(QMainWindow):
             uid = self.download_table.item(index.row(), 0).data(Qt.ItemDataRole.UserRole)
             if not uid or uid not in self.downloads:
                 continue
-            status = self.downloads[uid].status
+            dl = self.downloads[uid]
+            status = dl.status
 
             if status in (DownloadStatus.DOWNLOADING, DownloadStatus.WAITING):
                 any_pauseable = True
-            if status == DownloadStatus.PAUSED:
+            if status in (DownloadStatus.PAUSED, DownloadStatus.ERROR):
                 any_resumable = True
             if status not in (DownloadStatus.CANCELLED, DownloadStatus.COMPLETED):
                 any_cancelable = True
-            if status == DownloadStatus.CANCELLED:
+            # Restart: cancelados, com erro, ou COMPLETED falsamente
+            # (progresso < 100% indica que foi marcado concluído por bug)
+            if status in (DownloadStatus.CANCELLED, DownloadStatus.ERROR):
+                any_restartable = True
+            elif status == DownloadStatus.COMPLETED and dl.total_bytes > 0 \
+                    and dl.downloaded_bytes < dl.total_bytes:
                 any_restartable = True
 
         # Botão Pause/Resume — habilitado se qualquer item puder ser pausado ou retomado
@@ -1285,6 +1341,22 @@ class InternetArchiveGUI(QMainWindow):
         self.cancel_btn.setEnabled(any_cancelable)
         self.restart_btn.setEnabled(any_restartable)
         self.remove_btn.setEnabled(True)
+
+        # Priority buttons: only for a single WAITING item
+        if len(selected_rows) == 1:
+            row = selected_rows[0].row()
+            uid = self.download_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+            is_waiting = (
+                uid and uid in self.downloads
+                and self.downloads[uid].status == DownloadStatus.WAITING
+            )
+            self.priority_up_btn.setEnabled(is_waiting and row > 0)
+            self.priority_down_btn.setEnabled(
+                is_waiting and row < self.download_table.rowCount() - 1
+            )
+        else:
+            self.priority_up_btn.setEnabled(False)
+            self.priority_down_btn.setEnabled(False)
 
     def toolbar_pause_resume(self):
         """Pausa ou resume todos os downloads selecionados"""
@@ -1331,34 +1403,148 @@ class InternetArchiveGUI(QMainWindow):
         ]
         self._remove_by_uids(uids)
 
+    def _stop_download_for_removal(self, download_item):
+        """Stop a queued/running download so it can be removed immediately."""
+        if self.download_manager:
+            self.download_manager.remove_download(download_item)
+
+        thread = download_item.thread
+        if thread:
+            if thread.isRunning():
+                thread.cancel()
+            thread.wait()
+
+        download_item.thread = None
+
+    def _remove_download_entry(self, uid):
+        """Remove one download entry regardless of its current state."""
+        if not uid or uid not in self.downloads:
+            return False
+
+        download_item = self.downloads[uid]
+        self._stop_download_for_removal(download_item)
+
+        row = self._id_to_row.get(uid)
+        del self.downloads[uid]
+
+        if row is not None:
+            self.download_table.removeRow(row)
+            self._rebuild_row_map()
+
+        return True
+
     def _remove_by_uids(self, uids):
-        """Remove uma lista de downloads da tabela (apenas concluídos/cancelados/com erro)."""
-        has_active = False
+        """Remove uma lista de downloads da tabela em qualquer estado."""
         removed_any = False
         for uid in uids:
-            if not uid or uid not in self.downloads:
-                continue
-            download_item = self.downloads[uid]
-            if download_item.status in (
-                DownloadStatus.COMPLETED,
-                DownloadStatus.CANCELLED,
-                DownloadStatus.ERROR,
-            ):
-                row = self._id_to_row.get(uid)
-                if row is not None:
-                    del self.downloads[uid]
-                    self.download_table.removeRow(row)
-                    self._rebuild_row_map()  # índices mudam após cada remoção
-                    removed_any = True
-            else:
-                has_active = True
+            removed_any = self._remove_download_entry(uid) or removed_any
 
-        if has_active:
-            QMessageBox.warning(
-                self, self.t("warning"), self.t("warn_remove_active")
-            )
         if removed_any:
             self.save_downloads()
+            self.update_toolbar_buttons()
+
+    # ------------------------------------------------------------------
+    # Queue priority helpers
+    # ------------------------------------------------------------------
+
+    def _swap_table_rows(self, row1, row2):
+        """Swap the contents of two rows in the download table and update _id_to_row."""
+        if row1 == row2:
+            return
+
+        col_count = self.download_table.columnCount()
+
+        # Capture progress-bar values before takeItem (cellWidget lives independently)
+        pb1 = self.download_table.cellWidget(row1, 2)
+        pb2 = self.download_table.cellWidget(row2, 2)
+        pb1_val = pb1.value() if pb1 else None
+        pb2_val = pb2.value() if pb2 else None
+
+        # takeItem detaches items from their cells; we can reassign them freely
+        items_r1 = [self.download_table.takeItem(row1, c) for c in range(col_count)]
+        items_r2 = [self.download_table.takeItem(row2, c) for c in range(col_count)]
+
+        for c, item in enumerate(items_r2):
+            if item:
+                self.download_table.setItem(row1, c, item)
+        for c, item in enumerate(items_r1):
+            if item:
+                self.download_table.setItem(row2, c, item)
+
+        # Swap progress-bar values (widgets stay in their original cells)
+        if pb1 is not None and pb2_val is not None:
+            pb1.setValue(pb2_val)
+        if pb2 is not None and pb1_val is not None:
+            pb2.setValue(pb1_val)
+
+        # Rebuild the id→row mapping for both affected rows
+        for row in (row1, row2):
+            name_item = self.download_table.item(row, 0)
+            if name_item:
+                uid = name_item.data(Qt.ItemDataRole.UserRole)
+                if uid:
+                    self._id_to_row[uid] = row
+
+    def move_priority_up(self):
+        """Move the selected WAITING download one position higher in the queue."""
+        selected_rows = self.download_table.selectionModel().selectedRows()
+        if len(selected_rows) != 1:
+            return
+
+        row = selected_rows[0].row()
+        if row == 0:
+            return
+
+        name_item = self.download_table.item(row, 0)
+        if not name_item:
+            return
+        uid = name_item.data(Qt.ItemDataRole.UserRole)
+        if not uid or uid not in self.downloads:
+            return
+        if self.downloads[uid].status != DownloadStatus.WAITING:
+            return
+
+        self._swap_table_rows(row, row - 1)
+        self.download_manager.move_up(uid)
+
+        # Keep selection on the item that moved
+        self.download_table.selectRow(row - 1)
+        self.update_toolbar_buttons()
+
+    def move_priority_down(self):
+        """Move the selected WAITING download one position lower in the queue."""
+        selected_rows = self.download_table.selectionModel().selectedRows()
+        if len(selected_rows) != 1:
+            return
+
+        row = selected_rows[0].row()
+        if row >= self.download_table.rowCount() - 1:
+            return
+
+        name_item = self.download_table.item(row, 0)
+        if not name_item:
+            return
+        uid = name_item.data(Qt.ItemDataRole.UserRole)
+        if not uid or uid not in self.downloads:
+            return
+        if self.downloads[uid].status != DownloadStatus.WAITING:
+            return
+
+        self._swap_table_rows(row, row + 1)
+        self.download_manager.move_down(uid)
+
+        # Keep selection on the item that moved
+        self.download_table.selectRow(row + 1)
+        self.update_toolbar_buttons()
+
+    def force_download_item(self, uid):
+        """Bypass max_concurrent and start this WAITING download immediately."""
+        if uid not in self.downloads:
+            return
+        download_item = self.downloads[uid]
+        if download_item.status != DownloadStatus.WAITING:
+            return
+        self.download_manager.add_force_download(download_item)
 
     def create_settings_tab(self):
         tab = QWidget()
@@ -1769,14 +1955,24 @@ class InternetArchiveGUI(QMainWindow):
 
     def show_file_list_context_menu(self, position):
         """Mostra menu de contexto ao clicar com botão direito na lista de arquivos"""
-        item = self.file_list.itemAt(position)
-        if not item:
-            return
-
         context_menu = QMenu(self)
+
+        has_items = self.file_list.count() > 0
+        has_selection = bool(self.file_list.selectedItems())
+
+        select_all_action = context_menu.addAction(self.t("context_select_all"))
+        select_all_action.setEnabled(has_items)
+
+        copy_names_action = context_menu.addAction(self.t("context_copy_filenames"))
+        copy_names_action.setEnabled(has_selection)
+
+        context_menu.addSeparator()
 
         download_now_action = context_menu.addAction(self.t("context_download_now"))
         download_as_action = context_menu.addAction(self.t("context_download_as"))
+
+        download_now_action.setEnabled(has_selection)
+        download_as_action.setEnabled(has_selection)
 
         # Desabilita "Baixar Agora" se não há pasta padrão configurada
         if not self.default_download_folder:
@@ -1785,7 +1981,11 @@ class InternetArchiveGUI(QMainWindow):
 
         action = context_menu.exec(self.file_list.viewport().mapToGlobal(position))
 
-        if action == download_now_action:
+        if action == select_all_action:
+            self.file_list.selectAll()
+        elif action == copy_names_action:
+            self._context_copy_filenames()
+        elif action == download_now_action:
             self._context_download_now()
         elif action == download_as_action:
             self._context_download_as()
@@ -1824,6 +2024,17 @@ class InternetArchiveGUI(QMainWindow):
         for item in selected_items:
             filename = item.data(Qt.ItemDataRole.UserRole)
             self._add_single_file_to_queue(filename, dest_folder)
+
+    def _context_copy_filenames(self):
+        """Copia os nomes dos arquivos selecionados para a área de transferência"""
+        selected_items = self.file_list.selectedItems()
+        if not selected_items:
+            return
+
+        names = [item.data(Qt.ItemDataRole.UserRole) for item in selected_items]
+        text = "\n".join(names)
+        QApplication.clipboard().setText(text)
+        log(f"[CLIPBOARD] {len(names)} nome(s) de arquivo copiado(s)")
 
     def _add_single_file_to_queue(self, filename, dest_folder):
         """Adiciona um único arquivo à fila de download"""
@@ -2252,11 +2463,21 @@ class InternetArchiveGUI(QMainWindow):
 
         download_item = self.downloads[uid]
 
-        # Se não tem thread rodando (download pausado de sessão anterior)
+        # Se não tem thread rodando (download pausado de sessão anterior ou com erro)
         if not download_item.thread or not download_item.thread.isRunning():
-            # Apenas inicia se realmente estava pausado
-            if download_item.status in [DownloadStatus.PAUSED, DownloadStatus.WAITING]:
+            # Inicia se estava pausado, aguardando ou com erro (retry preservando parciais)
+            if download_item.status in [DownloadStatus.PAUSED, DownloadStatus.WAITING, DownloadStatus.ERROR]:
+                # Limpa mensagem de erro se estava com erro
+                if download_item.status == DownloadStatus.ERROR:
+                    download_item.error_msg = ""
+                    row = self._id_to_row.get(uid)
+                    if row is not None:
+                        msg_item = self.download_table.item(row, 6)
+                        if msg_item:
+                            msg_item.setText("")
+
                 # Adiciona à fila para iniciar
+                download_item.thread = None
                 self.download_manager.add_download(download_item)
                 download_item.status = DownloadStatus.WAITING
 
@@ -2265,8 +2486,10 @@ class InternetArchiveGUI(QMainWindow):
                 if row is not None:
                     status_item = self.download_table.item(row, 1)
                     status_item.setText(DownloadStatus.WAITING.value)
-                    status_item.setBackground(QColor(255, 255, 255))
+                    status_item.setBackground(QColor(240, 240, 255))
+                    status_item.setForeground(QColor(0, 0, 139))
 
+                self.save_downloads()
                 self.update_toolbar_buttons()
             return
 
@@ -2398,7 +2621,7 @@ class InternetArchiveGUI(QMainWindow):
         self.update_toolbar_buttons()
 
     def clear_completed(self):
-        rows_to_remove = []
+        uids_to_remove = []
 
         for row in range(self.download_table.rowCount()):
             uid = self.download_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
@@ -2409,12 +2632,9 @@ class InternetArchiveGUI(QMainWindow):
                     DownloadStatus.CANCELLED,
                     DownloadStatus.ERROR,
                 ]:
-                    rows_to_remove.append(row)
-                    del self.downloads[uid]
+                    uids_to_remove.append(uid)
 
-        for row in reversed(rows_to_remove):
-            self.download_table.removeRow(row)
-        self._rebuild_row_map()
+        self._remove_by_uids(uids_to_remove)
 
     def cancel_all(self):
         for uid in list(self.downloads.keys()):
@@ -2510,14 +2730,13 @@ class InternetArchiveGUI(QMainWindow):
             s = self.downloads[u].status
             if s in (DownloadStatus.DOWNLOADING, DownloadStatus.WAITING):
                 any_pauseable = True
-            if s == DownloadStatus.PAUSED:
+            if s in (DownloadStatus.PAUSED, DownloadStatus.ERROR):
                 any_resumable = True
             if s not in (DownloadStatus.CANCELLED, DownloadStatus.COMPLETED):
                 any_cancelable = True
-            if s == DownloadStatus.CANCELLED:
+            if s in (DownloadStatus.CANCELLED, DownloadStatus.ERROR):
                 any_restartable = True
-            if s in (DownloadStatus.COMPLETED, DownloadStatus.CANCELLED, DownloadStatus.ERROR):
-                any_removable = True
+            any_removable = True
 
         context_menu = QMenu(self)
 
@@ -2552,6 +2771,33 @@ class InternetArchiveGUI(QMainWindow):
                 lambda checked=False, us=target_uids: self._remove_by_uids(us)
             )
 
+        # --- Ações de prioridade (apenas para item único WAITING) ---
+        if len(target_uids) == 1:
+            single_uid = target_uids[0]
+            if single_uid and single_uid in self.downloads:
+                if self.downloads[single_uid].status == DownloadStatus.WAITING:
+                    context_menu.addSeparator()
+
+                    single_row = self._id_to_row.get(single_uid)
+
+                    move_up_action = context_menu.addAction("⬆ " + self.t("action_move_up"))
+                    move_up_action.setEnabled(single_row is not None and single_row > 0)
+                    move_up_action.triggered.connect(self.move_priority_up)
+
+                    move_down_action = context_menu.addAction("⬇ " + self.t("action_move_down"))
+                    move_down_action.setEnabled(
+                        single_row is not None
+                        and single_row < self.download_table.rowCount() - 1
+                    )
+                    move_down_action.triggered.connect(self.move_priority_down)
+
+                    force_action = context_menu.addAction(
+                        "⚡ " + self.t("action_force_download")
+                    )
+                    force_action.triggered.connect(
+                        lambda checked=False, u=single_uid: self.force_download_item(u)
+                    )
+
         # --- Ações específicas de coluna ---
         download_item = self.downloads[uid]
         file_path = os.path.join(download_item.dest_folder, download_item.filename)
@@ -2574,6 +2820,7 @@ class InternetArchiveGUI(QMainWindow):
                 open_folder_action.triggered.connect(
                     lambda: self.open_folder(download_item.dest_folder)
                 )
+
 
         elif column == 6:
             msg_item = self.download_table.item(row, 6)

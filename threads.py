@@ -2,11 +2,15 @@
 
 import os
 import time
-import requests
-import internetarchive as ia
+import threading
+from http.client import IncompleteRead
 from urllib.parse import unquote
+
+import internetarchive as ia
+import requests
+from requests.exceptions import ChunkedEncodingError
+from urllib3.exceptions import ProtocolError
 from PyQt6.QtCore import QThread, pyqtSignal, QMutex, QWaitCondition
-from queue import Queue
 
 from models import DownloadStatus
 from utils import log, format_size
@@ -19,7 +23,22 @@ def _is_retryable_error(e):
     return isinstance(e, (
         requests.exceptions.ConnectionError,
         requests.exceptions.Timeout,
+        requests.exceptions.ChunkedEncodingError,
+        requests.exceptions.ContentDecodingError,
+        requests.exceptions.RequestException,
+        ProtocolError,
+        IncompleteRead,
     ))
+
+
+def _build_stream_headers(range_header=None):
+    """Cabeçalhos mais estáveis para downloads longos e retomáveis."""
+    headers = {
+        'Accept-Encoding': 'identity',
+    }
+    if range_header:
+        headers['Range'] = range_header
+    return headers
 
 
 class SegmentDownloadThread(QThread):
@@ -89,46 +108,64 @@ class SegmentDownloadThread(QThread):
 
                 # Range request para este segmento
                 current_start = self.start_byte + self.downloaded
-                headers = {'Range': f'bytes={current_start}-{self.end_byte}'}
+                headers = _build_stream_headers(f'bytes={current_start}-{self.end_byte}')
 
                 log(f"[SEGMENT {self.segment_id}] Fazendo request: {headers}")
                 response = session.get(self.url, stream=True, timeout=30, headers=headers)
                 response.raise_for_status()
                 log(f"[SEGMENT {self.segment_id}] Response OK: {response.status_code}")
 
+                # Segmentos exigem suporte a Range. Se o servidor ignorar o Range,
+                # recomeçamos a tentativa em vez de corromper o arquivo .part.
+                if response.status_code != 206:
+                    raise Exception(
+                        f"Servidor não retornou conteúdo parcial para o segmento "
+                        f"{self.segment_id} (status {response.status_code})"
+                    )
+
                 # Abre em modo append se estiver continuando
                 mode = 'ab' if self.downloaded > 0 else 'wb'
 
-                with open(segment_file, mode) as f:
-                    chunk_count = 0
-                    for chunk in response.iter_content(chunk_size=8192):
-                        if self.is_cancelled:
-                            log(f"[SEGMENT {self.segment_id}] Cancelado")
-                            return
+                try:
+                    with open(segment_file, mode) as f:
+                        chunk_count = 0
+                        for chunk in response.iter_content(chunk_size=8192):
+                            if self.is_cancelled:
+                                log(f"[SEGMENT {self.segment_id}] Cancelado")
+                                return
 
-                        self.mutex.lock()
-                        while self.is_paused and not self.is_cancelled:
-                            self.pause_condition.wait(self.mutex)
-                        self.mutex.unlock()
+                            self.mutex.lock()
+                            while self.is_paused and not self.is_cancelled:
+                                self.pause_condition.wait(self.mutex)
+                            self.mutex.unlock()
 
-                        if chunk:
-                            f.write(chunk)
-                            self.downloaded += len(chunk)
-                            chunk_count += 1
+                            if chunk:
+                                f.write(chunk)
+                                self.downloaded += len(chunk)
+                                chunk_count += 1
 
-                            # Atualiza o dict compartilhado a cada 50 chunks (aprox a cada 400KB)
-                            if chunk_count % 50 == 0:
-                                self.progress_mutex.lock()
-                                self.progress_dict[self.segment_id] = self.downloaded
-                                self.progress_mutex.unlock()
+                                # Atualiza o dict compartilhado a cada 50 chunks (aprox a cada 400KB)
+                                if chunk_count % 50 == 0:
+                                    self.progress_mutex.lock()
+                                    self.progress_dict[self.segment_id] = self.downloaded
+                                    self.progress_mutex.unlock()
 
-                            if chunk_count % 100 == 0:  # Log a cada 100 chunks
-                                log(f"[SEGMENT {self.segment_id}] Progresso: {self.downloaded} bytes")
+                                if chunk_count % 100 == 0:  # Log a cada 100 chunks
+                                    log(f"[SEGMENT {self.segment_id}] Progresso: {self.downloaded} bytes")
+                finally:
+                    response.close()
 
-                    # Atualiza progresso final
-                    self.progress_mutex.lock()
-                    self.progress_dict[self.segment_id] = self.downloaded
-                    self.progress_mutex.unlock()
+                if not self.is_cancelled and self.downloaded < total_segment_size:
+                    missing = total_segment_size - self.downloaded
+                    raise ChunkedEncodingError(
+                        f"Segmento {self.segment_id} terminou incompleto: "
+                        f"faltam {missing} bytes"
+                    )
+
+                # Atualiza progresso final
+                self.progress_mutex.lock()
+                self.progress_dict[self.segment_id] = self.downloaded
+                self.progress_mutex.unlock()
 
                 log(f"[SEGMENT {self.segment_id}] Saiu do loop de download. Cancelado: {self.is_cancelled}")
 
@@ -200,6 +237,10 @@ class SingleDownloadThread(QThread):
             log(f"[THREAD] Iniciando download: {self.download_item.filename}")
             log(f"[THREAD] Segmentos: {self.download_item.segments}")
 
+            # Reset trackers usados pela verificação final
+            self._final_dest_path = None
+            self._final_total_size = 0
+
             if self.download_item.url:
                 parts = self.download_item.url.split('/')
                 if 'archive.org' in self.download_item.url and 'download' in parts:
@@ -218,6 +259,17 @@ class SingleDownloadThread(QThread):
                 self._download_with_progress(item, self.download_item.filename)
 
             if not self.is_cancelled:
+                # Sanity check: arquivo final precisa existir e ter tamanho >= total.
+                # Evita marcar como COMPLETED quando o download silenciosamente falhou.
+                dest = self._final_dest_path
+                expected = self._final_total_size
+                if dest and expected > 0:
+                    actual = os.path.getsize(dest) if os.path.exists(dest) else 0
+                    if actual < expected:
+                        raise Exception(
+                            f"Download terminou incompleto: "
+                            f"{format_size(actual)}/{format_size(expected)} no disco"
+                        )
                 self.status_changed.emit(self.download_item.unique_id,
                                         DownloadStatus.COMPLETED, "")
 
@@ -249,6 +301,10 @@ class SingleDownloadThread(QThread):
 
         # Pega o tamanho total do metadata do arquivo - força Python int (ilimitado)
         total_size = int(file_info.get('size', 0))
+
+        # Guarda para verificação final em run() antes de emitir COMPLETED
+        self._final_dest_path = dest_path
+        self._final_total_size = total_size
 
         log(f"[DOWNLOAD] Total size: {total_size} bytes ({format_size(total_size)})")
         log(f"[DOWNLOAD] Segmentos configurados: {self.download_item.segments}")
@@ -313,15 +369,21 @@ class SingleDownloadThread(QThread):
 
             try:
                 session = ia.get_session()
-                headers = {}
+                headers = _build_stream_headers()
                 if downloaded > 0:
-                    headers['Range'] = f'bytes={downloaded}-'
+                    headers = _build_stream_headers(f'bytes={downloaded}-')
 
                 response = session.get(download_url, stream=True, timeout=30, headers=headers)
 
                 if downloaded > 0 and response.status_code not in [200, 206]:
+                    response.close()
                     downloaded = 0
-                    response = session.get(download_url, stream=True, timeout=30)
+                    response = session.get(
+                        download_url,
+                        stream=True,
+                        timeout=30,
+                        headers=_build_stream_headers()
+                    )
 
                 response.raise_for_status()
 
@@ -333,43 +395,52 @@ class SingleDownloadThread(QThread):
                 if mode == 'wb':
                     downloaded = 0
 
-                with open(dest_path, mode) as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        if self.is_cancelled:
-                            return
+                try:
+                    with open(dest_path, mode) as f:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            if self.is_cancelled:
+                                return
 
-                        self.mutex.lock()
-                        while self.is_paused and not self.is_cancelled:
-                            self.pause_condition.wait(self.mutex)
-                            if not self.is_paused:
-                                start_time = time.time()
-                                last_update_time = start_time
-                                last_downloaded = downloaded
-                        self.mutex.unlock()
+                            self.mutex.lock()
+                            while self.is_paused and not self.is_cancelled:
+                                self.pause_condition.wait(self.mutex)
+                                if not self.is_paused:
+                                    start_time = time.time()
+                                    last_update_time = start_time
+                                    last_downloaded = downloaded
+                            self.mutex.unlock()
 
-                        if chunk:
-                            f.write(chunk)
-                            downloaded += len(chunk)
+                            if chunk:
+                                f.write(chunk)
+                                downloaded += len(chunk)
 
-                            current_time = time.time()
-                            if current_time - last_update_time >= 0.5:
-                                time_diff = current_time - last_update_time
-                                bytes_diff = downloaded - last_downloaded
-                                speed = bytes_diff / time_diff if time_diff > 0 else 0
-                                progress = int((downloaded * 100) // total_size) if total_size > 0 else 0
+                                current_time = time.time()
+                                if current_time - last_update_time >= 0.5:
+                                    time_diff = current_time - last_update_time
+                                    bytes_diff = downloaded - last_downloaded
+                                    speed = bytes_diff / time_diff if time_diff > 0 else 0
+                                    progress = int((downloaded * 100) // total_size) if total_size > 0 else 0
 
-                                self.progress_updated.emit(
-                                    self.download_item.unique_id,
-                                    {
-                                        'progress': progress,
-                                        'downloaded': downloaded,
-                                        'total': total_size,
-                                        'speed': float(speed)
-                                    }
-                                )
+                                    self.progress_updated.emit(
+                                        self.download_item.unique_id,
+                                        {
+                                            'progress': progress,
+                                            'downloaded': downloaded,
+                                            'total': total_size,
+                                            'speed': float(speed)
+                                        }
+                                    )
 
-                                last_update_time = current_time
-                                last_downloaded = downloaded
+                                    last_update_time = current_time
+                                    last_downloaded = downloaded
+                finally:
+                    response.close()
+
+                if not self.is_cancelled and downloaded < total_size:
+                    missing = total_size - downloaded
+                    raise ChunkedEncodingError(
+                        f"Download terminou incompleto: faltam {missing} bytes"
+                    )
 
                 if not self.is_cancelled:
                     self.progress_updated.emit(
@@ -466,9 +537,11 @@ class SingleDownloadThread(QThread):
 
         log(f"[MULTI-SEGMENT] Entrando no loop de monitoramento...")
         loop_count = 0
-        max_loops = 100000  # Previne loop infinito (aprox 2.7 horas para um download)
 
-        while loop_count < max_loops and any(thread.isRunning() for thread in self.segment_threads):
+        # Loop monitora até todas threads pararem. Sem cap arbitrário —
+        # cap antigo (~2.78h) marcava downloads grandes como concluídos
+        # incorretamente quando o tempo estourava com threads ainda rodando.
+        while any(thread.isRunning() for thread in self.segment_threads):
             loop_count += 1
             if loop_count % 50 == 0:  # Log a cada 5 segundos
                 running = sum(1 for t in self.segment_threads if t.isRunning())
@@ -615,9 +688,19 @@ class SingleDownloadThread(QThread):
                 {'progress': 100, 'downloaded': total_size, 'total': total_size, 'speed': 0.0}
             )
             log(f"[MULTI-SEGMENT] Concluído!")
+        elif self.is_cancelled:
+            log(f"[MULTI-SEGMENT] Cancelado pelo usuário. Arquivos .part preservados para retomar.")
         else:
-            log(f"[MULTI-SEGMENT] Download não completou. Cancelado: {self.is_cancelled}, Completos: {segments_completed}/{num_segments}, Disco OK: {all_segments_on_disk}")
-            log(f"[MULTI-SEGMENT] ATENÇÃO: Segmentos NÃO foram consolidados! Arquivos .part permanecem no disco.")
+            # Caso de falha silenciosa anterior: agora levanta exceção para que
+            # run() emita ERROR (e não COMPLETED). Os .part ficam para retomar.
+            actual_total = sum(actual_segment_sizes)
+            log(f"[MULTI-SEGMENT] Download não completou. "
+                f"Completos: {segments_completed}/{num_segments}, Disco OK: {all_segments_on_disk}")
+            log(f"[MULTI-SEGMENT] Arquivos .part preservados para retomar.")
+            raise Exception(
+                f"Download incompleto: {segments_completed}/{num_segments} segmentos prontos, "
+                f"{format_size(actual_total)}/{format_size(total_size)} no disco"
+            )
 
     def _merge_segments(self, dest_path, num_segments):
         """Junta os segmentos em um arquivo final"""
@@ -664,28 +747,108 @@ class DownloadManager(QThread):
     def __init__(self, max_concurrent):
         super().__init__()
         self.max_concurrent = max_concurrent
-        self.download_queue = Queue()
+        self.pending_downloads = []   # Ordered queue; index 0 = highest priority
+        self.force_pending = []       # Force-start queue; bypasses max_concurrent
+        self._lock = threading.Lock()
         self.active_downloads = []
+        self.removed_download_ids = set()
         self.is_running = True
 
     def add_download(self, download_item):
-        self.download_queue.put(download_item)
+        """Add a download to the end of the pending queue."""
+        with self._lock:
+            self.removed_download_ids.discard(download_item.unique_id)
+            self.pending_downloads.append(download_item)
+
+    def add_force_download(self, download_item):
+        """Remove item from the pending queue and start it immediately,
+        bypassing the max_concurrent limit."""
+        with self._lock:
+            self.removed_download_ids.discard(download_item.unique_id)
+            if download_item in self.pending_downloads:
+                self.pending_downloads.remove(download_item)
+                self.force_pending.append(download_item)
+                return True
+        return False
+
+    def remove_download(self, download_item):
+        """Remove an item from manager queues and prevent future starts."""
+        with self._lock:
+            self.removed_download_ids.add(download_item.unique_id)
+
+            removed = False
+            if download_item in self.pending_downloads:
+                self.pending_downloads.remove(download_item)
+                removed = True
+            if download_item in self.force_pending:
+                self.force_pending.remove(download_item)
+                removed = True
+            if download_item in self.active_downloads and (
+                not download_item.thread or not download_item.thread.isRunning()
+            ):
+                self.active_downloads.remove(download_item)
+                removed = True
+
+            return removed
+
+    def move_up(self, unique_id):
+        """Move a pending item one position earlier in the queue (higher priority)."""
+        with self._lock:
+            for i, item in enumerate(self.pending_downloads):
+                if item.unique_id == unique_id and i > 0:
+                    self.pending_downloads[i - 1], self.pending_downloads[i] = \
+                        self.pending_downloads[i], self.pending_downloads[i - 1]
+                    return True
+        return False
+
+    def move_down(self, unique_id):
+        """Move a pending item one position later in the queue (lower priority)."""
+        with self._lock:
+            for i, item in enumerate(self.pending_downloads):
+                if item.unique_id == unique_id and i < len(self.pending_downloads) - 1:
+                    self.pending_downloads[i + 1], self.pending_downloads[i] = \
+                        self.pending_downloads[i], self.pending_downloads[i + 1]
+                    return True
+        return False
+
+    def _start_download(self, download_item):
+        """Spin up a SingleDownloadThread for the given item (run-thread only)."""
+        with self._lock:
+            if download_item.unique_id in self.removed_download_ids:
+                return
+
+            thread = SingleDownloadThread(download_item)
+            download_item.thread = thread
+            self.active_downloads.append(download_item)
+            self.download_started.emit(download_item.unique_id)
+            thread.start()
 
     def run(self):
-        while self.is_running or not self.download_queue.empty() or self.active_downloads:
+        while True:
+            with self._lock:
+                has_pending = bool(self.pending_downloads or self.force_pending)
+
+            if not self.is_running and not has_pending and not self.active_downloads:
+                break
+
             self.active_downloads = [d for d in self.active_downloads
-                                    if d.thread and d.thread.isRunning()]
+                                     if d.thread and d.thread.isRunning()]
 
-            while (len(self.active_downloads) < self.max_concurrent and
-                   not self.download_queue.empty()):
-                download_item = self.download_queue.get()
+            # Always start forced downloads regardless of max_concurrent
+            while True:
+                with self._lock:
+                    if not self.force_pending:
+                        break
+                    item = self.force_pending.pop(0)
+                self._start_download(item)
 
-                thread = SingleDownloadThread(download_item)
-                download_item.thread = thread
-
-                self.active_downloads.append(download_item)
-                self.download_started.emit(download_item.unique_id)
-                thread.start()
+            # Start normal downloads up to max_concurrent
+            while len(self.active_downloads) < self.max_concurrent:
+                with self._lock:
+                    if not self.pending_downloads:
+                        break
+                    item = self.pending_downloads.pop(0)
+                self._start_download(item)
 
             time.sleep(0.1)
 
