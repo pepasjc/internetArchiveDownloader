@@ -33,12 +33,68 @@ def _is_retryable_error(e):
 
 def _build_stream_headers(range_header=None):
     """Cabeçalhos mais estáveis para downloads longos e retomáveis."""
-    headers = {
-        'Accept-Encoding': 'identity',
-    }
+    headers = {}
     if range_header:
         headers['Range'] = range_header
     return headers
+
+
+CHUNK_SIZE = 65536  # 64 KB — reduz overhead de loop e contenção de GIL
+
+
+class RateLimiter:
+    """Token bucket compartilhado por todas as threads de download.
+
+    `rate` em bytes/s; 0 (padrão) desliga o limite. A capacidade do balde é
+    sempre >= o tamanho do chunk pedido, senão um limite baixo travaria o
+    download esperando por tokens que nunca cabem.
+    """
+
+    def __init__(self, rate=0):
+        self._rate = max(0, int(rate))
+        self._lock = threading.Lock()
+        self._tokens = 0.0
+        self._last = time.monotonic()
+
+    def set_rate(self, rate):
+        with self._lock:
+            self._rate = max(0, int(rate))
+            self._tokens = 0.0
+            self._last = time.monotonic()
+
+    @property
+    def rate(self):
+        return self._rate
+
+    def consume(self, nbytes, should_abort=None):
+        """Bloqueia até liberar `nbytes`. Retorna cedo se `should_abort()`."""
+        if self._rate <= 0 or nbytes <= 0:
+            return
+        while True:
+            with self._lock:
+                if self._rate <= 0:
+                    return
+                now = time.monotonic()
+                capacity = max(float(self._rate), float(nbytes))
+                self._tokens = min(
+                    capacity, self._tokens + (now - self._last) * self._rate
+                )
+                self._last = now
+                if self._tokens >= nbytes:
+                    self._tokens -= nbytes
+                    return
+                wait = min((nbytes - self._tokens) / self._rate, 0.25)
+            if should_abort is not None and should_abort():
+                return
+            time.sleep(max(wait, 0.005))
+
+
+GLOBAL_RATE_LIMITER = RateLimiter()
+
+
+def set_global_rate_limit(bytes_per_second):
+    """Define o teto global de velocidade (0 = ilimitado)."""
+    GLOBAL_RATE_LIMITER.set_rate(bytes_per_second)
 
 
 class SegmentDownloadThread(QThread):
@@ -129,7 +185,7 @@ class SegmentDownloadThread(QThread):
                 try:
                     with open(segment_file, mode) as f:
                         chunk_count = 0
-                        for chunk in response.iter_content(chunk_size=8192):
+                        for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
                             if self.is_cancelled:
                                 log(f"[SEGMENT {self.segment_id}] Cancelado")
                                 return
@@ -143,14 +199,17 @@ class SegmentDownloadThread(QThread):
                                 f.write(chunk)
                                 self.downloaded += len(chunk)
                                 chunk_count += 1
+                                GLOBAL_RATE_LIMITER.consume(
+                                    len(chunk), lambda: self.is_cancelled
+                                )
 
-                                # Atualiza o dict compartilhado a cada 50 chunks (aprox a cada 400KB)
-                                if chunk_count % 50 == 0:
+                                # Atualiza o dict compartilhado a cada ~512KB (8 chunks de 64KB)
+                                if chunk_count % 8 == 0:
                                     self.progress_mutex.lock()
                                     self.progress_dict[self.segment_id] = self.downloaded
                                     self.progress_mutex.unlock()
 
-                                if chunk_count % 100 == 0:  # Log a cada 100 chunks
+                                if chunk_count % 128 == 0:  # Log a cada ~8MB
                                     log(f"[SEGMENT {self.segment_id}] Progresso: {self.downloaded} bytes")
                 finally:
                     response.close()
@@ -228,6 +287,8 @@ class SingleDownloadThread(QThread):
         self.mutex = QMutex()
         self.pause_condition = QWaitCondition()
         self.segment_threads = []
+        self.segment_sizes = []
+        self.segment_progress = {}
 
     def run(self):
         try:
@@ -397,7 +458,7 @@ class SingleDownloadThread(QThread):
 
                 try:
                     with open(dest_path, mode) as f:
-                        for chunk in response.iter_content(chunk_size=8192):
+                        for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
                             if self.is_cancelled:
                                 return
 
@@ -413,6 +474,9 @@ class SingleDownloadThread(QThread):
                             if chunk:
                                 f.write(chunk)
                                 downloaded += len(chunk)
+                                GLOBAL_RATE_LIMITER.consume(
+                                    len(chunk), lambda: self.is_cancelled
+                                )
 
                                 current_time = time.time()
                                 if current_time - last_update_time >= 0.5:
@@ -427,7 +491,8 @@ class SingleDownloadThread(QThread):
                                             'progress': progress,
                                             'downloaded': downloaded,
                                             'total': total_size,
-                                            'speed': float(speed)
+                                            'speed': float(speed),
+                                            'segments': [(downloaded, total_size)]
                                         }
                                     )
 
@@ -489,6 +554,7 @@ class SingleDownloadThread(QThread):
         # Cria threads para cada segmento
         self.segment_threads = []
         self.segment_progress = {}
+        self.segment_sizes = []
         self.segment_progress_mutex = QMutex()
 
         # Emite progresso inicial com tamanho total
@@ -509,6 +575,9 @@ class SingleDownloadThread(QThread):
             end_byte = ((i + 1) * segment_size - 1) if i < num_segments - 1 else (total_size - 1)
 
             log(f"[MULTI-SEGMENT] Segmento {i}: bytes {start_byte}-{end_byte}")
+
+            # Tamanho esperado de cada segmento — usado no mapa de conexões da GUI
+            self.segment_sizes.append(end_byte - start_byte + 1)
 
             # Inicializa progresso
             self.segment_progress[i] = 0
@@ -592,6 +661,10 @@ class SingleDownloadThread(QThread):
                 # Lê o progresso total de forma thread-safe
                 self.segment_progress_mutex.lock()
                 total_downloaded = sum(self.segment_progress.values())
+                per_segment = [
+                    (self.segment_progress.get(i, 0), self.segment_sizes[i])
+                    for i in range(len(self.segment_sizes))
+                ]
                 self.segment_progress_mutex.unlock()
 
                 time_diff = current_time - last_update_time
@@ -605,7 +678,8 @@ class SingleDownloadThread(QThread):
                         'progress': progress,
                         'downloaded': total_downloaded,
                         'total': total_size,
-                        'speed': float(speed)
+                        'speed': float(speed),
+                        'segments': per_segment
                     }
                 )
 
